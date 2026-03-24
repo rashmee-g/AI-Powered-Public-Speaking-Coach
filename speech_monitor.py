@@ -310,6 +310,14 @@ def pitch_feedback(pitch_range: float, voiced_ratio: float) -> dict:
             "short": "Listening for vocal variety",
         }
 
+    if pitch_range < 15:
+        return {
+            "label": "Very flat",
+            "severity": "alert",
+            "message": "Your voice sounds very flat. Emphasize key words more clearly.",
+            "short": "Emphasize key words more",
+        }
+
     if pitch_range < MONOTONE_HZ:
         return {
             "label": "Flat",
@@ -332,6 +340,25 @@ def pitch_feedback(pitch_range: float, voiced_ratio: float) -> dict:
         "message": "Your vocal variety sounds healthy.",
         "short": "Vocal variety sounds healthy",
     }
+
+def severity_prefix(severity: str) -> str:
+    return {
+        "ok": "[OK]",
+        "watch": "[WARNING]",
+        "alert": "[ALERT]",
+    }.get(severity, "[INFO]")
+
+
+def fmt_live_alerts(r: dict) -> str:
+    status = r["status"]
+    messages = r["messages"]
+
+    lines = [f"{status['overall']}: {status['headline']}"]
+
+    for msg in messages:
+        lines.append(f"{severity_prefix(msg['severity'])} {msg['area'].capitalize()}: {msg['short']}")
+
+    return "\n".join(lines)
 
 
 def overall_feedback(pace_fb: dict, volume_fb: dict, pause_fb: dict, pitch_fb: dict) -> tuple[str, str, list[dict]]:
@@ -637,7 +664,7 @@ def main():
                     if result:
                         stats.add(result)
                         if guard.should_print(result["status"]["headline"]):
-                            print(fmt(result))
+                            print(fmt_live_alerts(result))
                             print("-" * 44)
 
                     last_update = now
