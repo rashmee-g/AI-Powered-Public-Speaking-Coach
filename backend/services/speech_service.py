@@ -1,62 +1,102 @@
+from __future__ import annotations
+
 import json
 import queue
 import time
-from collections import deque
+from collections import Counter, deque
 from pathlib import Path
+from typing import Any
 
+import librosa
 import numpy as np
 import sounddevice as sd
-import librosa
 
 
-# -------- thresholds --------
+# ============================================================
+# Config
+# ============================================================
+
 SR = 16000
 CHUNK_MS = 30
 CHUNK = int(SR * CHUNK_MS / 1000)
 
-ANALYSIS_SEC = 3.0   # rolling window length
-UPDATE_SEC = 0.5     # how often to emit a reading
+ANALYSIS_SEC = 4.0          # rolling window length
+UPDATE_SEC = 0.75           # how often to emit a reading
+MIN_ANALYZE_SEC = 0.8       # minimum audio length before analyze()
 
-# Pace
-FAST_WPM = 260
-SLOW_WPM = 110
+# Baseline calibration
+NOISE_CALIBRATION_SEC = 1.5
+USER_CALIBRATION_SEC = 8.0
 
-# Volume 
-HIGH_VOL_DBFS = -22.0   # clipping / shouting risk
-MIN_SNR_DB = 12.0       # speech must be at least this far above noise floor
+# Pace defaults / fallback
+DEFAULT_FAST_WPM = 185
+DEFAULT_SLOW_WPM = 110
+
+# Volume defaults / fallback
+DEFAULT_HIGH_VOL_DBFS = -15.0
+MIN_SNR_DB = 12.0
 
 # Pauses
 LONG_PAUSE_S = 1.5
 MIN_SILENCE_S = 0.25
 TOP_DB = 28.0
 
-# Monotone
-MONOTONE_HZ = 25.0
+# Pitch / monotone defaults
+DEFAULT_MONOTONE_HZ = 25.0
 MIN_VOICED = 0.25
 
+# Smoothing / persistence
+PACE_HISTORY_LEN = 5
+VOLUME_HISTORY_LEN = 5
+PITCH_HISTORY_LEN = 5
+SILENCE_HISTORY_LEN = 5
+ISSUE_PERSISTENCE_WINDOWS = 2
+MESSAGE_COOLDOWN_SEC = 3.0
+
+# Output
+SHOW_RAW_METRICS = True
 SAVE_SUMMARY_JSON: str | None = None
 
-# Output / UX
-SHOW_RAW_METRICS = True
-MESSAGE_COOLDOWN_SEC = 3.0   # suppress repeating the same headline too often
 
-# -------- initial buffer state --------
-buffer: deque = deque(maxlen=int(SR * ANALYSIS_SEC))
+# ============================================================
+# Runtime state
+# ============================================================
+
+buffer: deque[float] = deque(maxlen=int(SR * ANALYSIS_SEC))
 audio_q: "queue.Queue[np.ndarray]" = queue.Queue()
+
 noise_floor_dbfs: float = -60.0
 
+user_baseline: dict[str, float] = {
+    "baseline_dbfs": -24.0,
+    "baseline_wpm": 145.0,
+    "baseline_pitch": 40.0,
+    "baseline_silence_pct": 18.0,
+}
+
+pace_history: deque[float] = deque(maxlen=PACE_HISTORY_LEN)
+volume_history: deque[float] = deque(maxlen=VOLUME_HISTORY_LEN)
+pitch_history: deque[float] = deque(maxlen=PITCH_HISTORY_LEN)
+silence_history: deque[float] = deque(maxlen=SILENCE_HISTORY_LEN)
+
+issue_history: deque[list[str]] = deque(maxlen=ISSUE_PERSISTENCE_WINDOWS)
+
+
+# ============================================================
+# Audio callback
+# ============================================================
 
 def audio_callback(indata, frames, time_info, status):
     audio_q.put(indata[:, 0].copy())
 
 
-# ------------------------------------------------------------------ #
-#  Calibration                                                        #
-# ------------------------------------------------------------------ #
+# ============================================================
+# Calibration
+# ============================================================
 
-def calibrate(duration_s: float = 1.5) -> float:
-    print(f"Calibrating — stay quiet for {duration_s}s...")
-    samples = []
+def calibrate_noise(duration_s: float = NOISE_CALIBRATION_SEC) -> float:
+    print(f"Calibrating room noise — stay quiet for {duration_s:.1f}s...")
+    samples: list[np.ndarray] = []
     deadline = time.time() + duration_s
 
     with sd.InputStream(
@@ -73,24 +113,84 @@ def calibrate(duration_s: float = 1.5) -> float:
                 pass
 
     while not audio_q.empty():
-        audio_q.get_nowait()
+        try:
+            audio_q.get_nowait()
+        except queue.Empty:
+            break
 
-    if samples:
-        y = np.concatenate(samples)
-        rms = float(np.sqrt(np.mean(y ** 2) + 1e-12))
-        db = float(20 * np.log10(rms))
-        print(f"Noise floor: {db:.1f} dBFS\n")
-        return db
+    if not samples:
+        print("Noise calibration failed; using fallback noise floor -60 dBFS.\n")
+        return -60.0
 
-    return -60.0
+    y = np.concatenate(samples)
+    rms = float(np.sqrt(np.mean(y ** 2) + 1e-12))
+    db = float(20 * np.log10(rms + 1e-12))
+    print(f"Noise floor: {db:.1f} dBFS\n")
+    return db
 
 
-# ------------------------------------------------------------------ #
-#  The four metric functions                                          #
-# ------------------------------------------------------------------ #
+def calibrate_user(duration_s: float = USER_CALIBRATION_SEC) -> dict[str, float]:
+    print(f"Calibration speech sample — speak normally for {duration_s:.1f}s...")
+
+    samples: list[np.ndarray] = []
+    deadline = time.time() + duration_s
+
+    with sd.InputStream(
+        samplerate=SR,
+        channels=1,
+        dtype="float32",
+        blocksize=CHUNK,
+        callback=audio_callback,
+    ):
+        while time.time() < deadline:
+            try:
+                samples.append(audio_q.get(timeout=0.5))
+            except queue.Empty:
+                pass
+
+    while not audio_q.empty():
+        try:
+            audio_q.get_nowait()
+        except queue.Empty:
+            break
+
+    if not samples:
+        print("User calibration failed; using fallback speaking baseline.\n")
+        return user_baseline.copy()
+
+    y = np.concatenate(samples).astype(np.float32)
+    y = y - float(np.mean(y))
+
+    y_sp, speaking_time = speech_only(y)
+    avg_dbfs = measure_volume(y_sp)
+    wpm = measure_pace(y_sp, speaking_time)
+    long_pauses, silence_ratio = measure_pauses(y)
+
+    try:
+        pitch_range, voiced_ratio = measure_pitch_range(y_sp)
+    except Exception:
+        pitch_range, voiced_ratio = 0.0, 0.0
+
+    baseline = {
+        "baseline_dbfs": avg_dbfs if np.isfinite(avg_dbfs) else -24.0,
+        "baseline_wpm": wpm if wpm > 0 else 145.0,
+        "baseline_pitch": pitch_range if pitch_range > 0 else 40.0,
+        "baseline_silence_pct": silence_ratio * 100.0,
+    }
+
+    print("User baseline:")
+    print(json.dumps({k: round(v, 2) for k, v in baseline.items()}, indent=2))
+    print()
+
+    return baseline
+
+
+# ============================================================
+# Feature extraction
+# ============================================================
 
 def measure_pace(y_speech: np.ndarray, speaking_time_s: float) -> float:
-    if speaking_time_s < 0.3 or y_speech.size < SR * 0.1:
+    if speaking_time_s < 0.4 or y_speech.size < SR * 0.2:
         return 0.0
 
     hop = 256
@@ -101,6 +201,7 @@ def measure_pace(y_speech: np.ndarray, speaking_time_s: float) -> float:
         aggregate=np.median,
         fmax=3500,
     )
+
     onsets = librosa.onset.onset_detect(
         onset_envelope=onset_env,
         sr=SR,
@@ -108,25 +209,33 @@ def measure_pace(y_speech: np.ndarray, speaking_time_s: float) -> float:
         backtrack=True,
         units="time",
         delta=0.12,
-        wait=int(SR * 0.08 / hop),
+        wait=max(1, int(SR * 0.08 / hop)),
     )
-    return float(len(onsets) / max(speaking_time_s, 1e-6) * 60 / 1.5)
+
+    # rough syllables -> words conversion
+    syllables_per_min = float(len(onsets) / max(speaking_time_s, 1e-6) * 60.0)
+    estimated_wpm = syllables_per_min / 1.5
+    return float(estimated_wpm)
 
 
 def measure_volume(y_speech: np.ndarray) -> float:
     if y_speech.size == 0:
         return -80.0
     rms = float(np.sqrt(np.mean(y_speech ** 2) + 1e-12))
-    return float(20 * np.log10(rms))
+    return float(20 * np.log10(rms + 1e-12))
 
 
 def measure_pauses(y: np.ndarray) -> tuple[int, float]:
     duration = len(y) / SR
+    if duration <= 0:
+        return 0, 0.0
+
     intervals = librosa.effects.split(y, top_db=TOP_DB)
     speech_segs = [(s / SR, e / SR) for s, e in intervals]
 
-    silence_gaps = []
+    silence_gaps: list[float] = []
     prev = 0.0
+
     for s, e in speech_segs:
         if s - prev >= MIN_SILENCE_S:
             silence_gaps.append(s - prev)
@@ -142,7 +251,7 @@ def measure_pauses(y: np.ndarray) -> tuple[int, float]:
 
 
 def measure_pitch_range(y_speech: np.ndarray) -> tuple[float, float]:
-    if y_speech.size < SR * 0.2:
+    if y_speech.size < SR * 0.25:
         return 0.0, 0.0
 
     f0, voiced, _ = librosa.pyin(
@@ -153,6 +262,7 @@ def measure_pitch_range(y_speech: np.ndarray) -> tuple[float, float]:
         frame_length=2048,
         hop_length=512,
     )
+
     if f0 is None or voiced is None or not voiced.any():
         return 0.0, 0.0
 
@@ -170,30 +280,74 @@ def measure_pitch_range(y_speech: np.ndarray) -> tuple[float, float]:
     return pitch_range, voiced_ratio
 
 
-# ------------------------------------------------------------------ #
-#  Extract speech-only audio                                          #
-# ------------------------------------------------------------------ #
-
 def speech_only(y: np.ndarray) -> tuple[np.ndarray, float]:
     intervals = librosa.effects.split(y, top_db=TOP_DB)
     parts = [y[s:e] for s, e in intervals if (e - s) > int(SR * 0.05)]
+
     if not parts:
         return np.array([], dtype=np.float32), 0.0
+
     audio = np.concatenate(parts)
     speaking_time = sum((e - s) / SR for s, e in intervals)
     return audio, speaking_time
 
 
-# ------------------------------------------------------------------ #
-#  User-friendly interpretation helpers                               #
-# ------------------------------------------------------------------ #
+# ============================================================
+# Helpers
+# ============================================================
 
 def sev_rank(severity: str) -> int:
     return {"ok": 0, "watch": 1, "alert": 2}.get(severity, 0)
 
 
-def pace_feedback(wpm: float, speaking_time: float) -> dict:
-    if speaking_time < 0.5 or wpm <= 0:
+def severity_prefix(severity: str) -> str:
+    return {
+        "ok": "[OK]",
+        "watch": "[WARNING]",
+        "alert": "[ALERT]",
+    }.get(severity, "[INFO]")
+
+
+def _median_or_default(values: deque[float], default: float) -> float:
+    if not values:
+        return default
+    return float(np.median(np.array(values, dtype=np.float32)))
+
+
+def get_dynamic_thresholds() -> dict[str, float]:
+    baseline_wpm = user_baseline.get("baseline_wpm", 145.0)
+    baseline_dbfs = user_baseline.get("baseline_dbfs", -24.0)
+    baseline_pitch = user_baseline.get("baseline_pitch", 40.0)
+    baseline_silence = user_baseline.get("baseline_silence_pct", 18.0)
+
+    fast_wpm = max(DEFAULT_FAST_WPM, baseline_wpm + 25.0)
+    slow_wpm = min(DEFAULT_SLOW_WPM, max(90.0, baseline_wpm - 35.0))
+
+    loud_dbfs = max(DEFAULT_HIGH_VOL_DBFS, baseline_dbfs + 8.0)
+    quiet_dbfs = baseline_dbfs - 8.0
+
+    monotone_hz = min(DEFAULT_MONOTONE_HZ, max(15.0, baseline_pitch * 0.6))
+
+    pause_heavy_pct = max(40.0, baseline_silence + 18.0)
+    pause_dense_pct = min(8.0, max(4.0, baseline_silence - 10.0))
+
+    return {
+        "fast_wpm": fast_wpm,
+        "slow_wpm": slow_wpm,
+        "loud_dbfs": loud_dbfs,
+        "quiet_dbfs": quiet_dbfs,
+        "monotone_hz": monotone_hz,
+        "pause_heavy_pct": pause_heavy_pct,
+        "pause_dense_pct": pause_dense_pct,
+    }
+
+
+# ============================================================
+# Feedback generators
+# ============================================================
+
+def pace_feedback(wpm: float, speaking_time: float, thresholds: dict[str, float]) -> dict[str, str]:
+    if speaking_time < 0.7 or wpm <= 0:
         return {
             "label": "Waiting for more speech",
             "severity": "ok",
@@ -201,7 +355,7 @@ def pace_feedback(wpm: float, speaking_time: float) -> dict:
             "short": "Listening for pace",
         }
 
-    if wpm > FAST_WPM:
+    if wpm > thresholds["fast_wpm"]:
         return {
             "label": "Fast",
             "severity": "alert",
@@ -209,7 +363,7 @@ def pace_feedback(wpm: float, speaking_time: float) -> dict:
             "short": "Slow down a little",
         }
 
-    if wpm < SLOW_WPM:
+    if wpm < thresholds["slow_wpm"]:
         return {
             "label": "Slow",
             "severity": "watch",
@@ -225,32 +379,33 @@ def pace_feedback(wpm: float, speaking_time: float) -> dict:
     }
 
 
-def volume_feedback(avg_dbfs: float, snr_db: float, low_vol_threshold: float) -> dict:
-    if avg_dbfs > HIGH_VOL_DBFS:
+def volume_feedback(
+    avg_dbfs: float,
+    snr_db: float,
+    thresholds: dict[str, float],
+) -> dict[str, str]:
+    if avg_dbfs > thresholds["loud_dbfs"]:
         return {
             "label": "Too loud",
-            "severity": "alert",
-            "message": "Back off the volume a bit.",
+            "severity": "watch",
+            "message": "Back off the volume a bit so you sound controlled, not forced.",
             "short": "Back off the volume a bit",
         }
 
-    if avg_dbfs < low_vol_threshold or snr_db < MIN_SNR_DB:
-        if snr_db < MIN_SNR_DB - 4:
-            label = "Hard to hear"
-            msg = "Speak clearly louder so your voice stands out from the room noise."
-            short = "Speak louder"
-            severity = "alert"
-        else:
-            label = "Slightly quiet"
-            msg = "Speak a bit louder."
-            short = "Speak a bit louder"
-            severity = "watch"
-
+    if snr_db < MIN_SNR_DB - 4:
         return {
-            "label": label,
-            "severity": severity,
-            "message": msg,
-            "short": short,
+            "label": "Hard to hear",
+            "severity": "alert",
+            "message": "Speak clearly louder so your voice stands out from the room noise.",
+            "short": "Speak louder",
+        }
+
+    if avg_dbfs < thresholds["quiet_dbfs"] or snr_db < MIN_SNR_DB:
+        return {
+            "label": "Slightly quiet",
+            "severity": "watch",
+            "message": "Speak a bit louder and more forward.",
+            "short": "Speak a bit louder",
         }
 
     return {
@@ -261,15 +416,16 @@ def volume_feedback(avg_dbfs: float, snr_db: float, low_vol_threshold: float) ->
     }
 
 
-def pause_feedback(long_pauses: int, silence_pct: float) -> dict:
-    if long_pauses > 0:
-        if long_pauses >= 2:
-            return {
-                "label": "Long pauses",
-                "severity": "alert",
-                "message": "Your pauses are running a bit long. Try keeping your thought flow moving.",
-                "short": "Keep pauses shorter",
-            }
+def pause_feedback(long_pauses: int, silence_pct: float, thresholds: dict[str, float]) -> dict[str, str]:
+    if long_pauses >= 2:
+        return {
+            "label": "Long pauses",
+            "severity": "alert",
+            "message": "Your pauses are running a bit long. Try keeping your thought flow moving.",
+            "short": "Keep pauses shorter",
+        }
+
+    if long_pauses == 1:
         return {
             "label": "One long pause",
             "severity": "watch",
@@ -277,7 +433,7 @@ def pause_feedback(long_pauses: int, silence_pct: float) -> dict:
             "short": "Quicker restart after pauses",
         }
 
-    if silence_pct >= 40:
+    if silence_pct >= thresholds["pause_heavy_pct"]:
         return {
             "label": "Pause-heavy",
             "severity": "watch",
@@ -285,7 +441,7 @@ def pause_feedback(long_pauses: int, silence_pct: float) -> dict:
             "short": "Link ideas more smoothly",
         }
 
-    if silence_pct <= 8:
+    if silence_pct <= thresholds["pause_dense_pct"]:
         return {
             "label": "Very dense",
             "severity": "watch",
@@ -301,7 +457,7 @@ def pause_feedback(long_pauses: int, silence_pct: float) -> dict:
     }
 
 
-def pitch_feedback(pitch_range: float, voiced_ratio: float) -> dict:
+def pitch_feedback(pitch_range: float, voiced_ratio: float, thresholds: dict[str, float]) -> dict[str, str]:
     if voiced_ratio < MIN_VOICED:
         return {
             "label": "Not enough voiced audio yet",
@@ -310,7 +466,9 @@ def pitch_feedback(pitch_range: float, voiced_ratio: float) -> dict:
             "short": "Listening for vocal variety",
         }
 
-    if pitch_range < 15:
+    very_flat_threshold = max(10.0, thresholds["monotone_hz"] * 0.65)
+
+    if pitch_range < very_flat_threshold:
         return {
             "label": "Very flat",
             "severity": "alert",
@@ -318,7 +476,7 @@ def pitch_feedback(pitch_range: float, voiced_ratio: float) -> dict:
             "short": "Emphasize key words more",
         }
 
-    if pitch_range < MONOTONE_HZ:
+    if pitch_range < thresholds["monotone_hz"]:
         return {
             "label": "Flat",
             "severity": "watch",
@@ -326,7 +484,7 @@ def pitch_feedback(pitch_range: float, voiced_ratio: float) -> dict:
             "short": "Add more vocal variety",
         }
 
-    if pitch_range < MONOTONE_HZ + 10:
+    if pitch_range < thresholds["monotone_hz"] + 8:
         return {
             "label": "Slightly flat",
             "severity": "watch",
@@ -341,27 +499,49 @@ def pitch_feedback(pitch_range: float, voiced_ratio: float) -> dict:
         "short": "Vocal variety sounds healthy",
     }
 
-def severity_prefix(severity: str) -> str:
-    return {
-        "ok": "[OK]",
-        "watch": "[WARNING]",
-        "alert": "[ALERT]",
-    }.get(severity, "[INFO]")
+
+def apply_persistence(messages: list[dict[str, str]]) -> list[dict[str, str]]:
+    current_issues = [m["area"] for m in messages if m["severity"] != "ok"]
+    issue_history.append(current_issues)
+
+    if len(issue_history) < ISSUE_PERSISTENCE_WINDOWS:
+        softened = []
+        for m in messages:
+            if m["severity"] == "alert":
+                new_m = dict(m)
+                new_m["severity"] = "watch"
+                softened.append(new_m)
+            else:
+                softened.append(m)
+        return softened
+
+    counts = Counter()
+    for window in issue_history:
+        counts.update(window)
+
+    filtered: list[dict[str, str]] = []
+    for m in messages:
+        if m["severity"] == "ok":
+            filtered.append(m)
+            continue
+
+        if counts[m["area"]] >= ISSUE_PERSISTENCE_WINDOWS:
+            filtered.append(m)
+        else:
+            new_m = dict(m)
+            if new_m["severity"] == "alert":
+                new_m["severity"] = "watch"
+            filtered.append(new_m)
+
+    return filtered
 
 
-def fmt_live_alerts(r: dict) -> str:
-    status = r["status"]
-    messages = r["messages"]
-
-    lines = [f"{status['overall']}: {status['headline']}"]
-
-    for msg in messages:
-        lines.append(f"{severity_prefix(msg['severity'])} {msg['area'].capitalize()}: {msg['short']}")
-
-    return "\n".join(lines)
-
-
-def overall_feedback(pace_fb: dict, volume_fb: dict, pause_fb: dict, pitch_fb: dict) -> tuple[str, str, list[dict]]:
+def overall_feedback(
+    pace_fb: dict[str, str],
+    volume_fb: dict[str, str],
+    pause_fb: dict[str, str],
+    pitch_fb: dict[str, str],
+) -> tuple[str, str, list[dict[str, str]]]:
     messages = [
         {"area": "pace", "severity": pace_fb["severity"], "text": pace_fb["message"], "short": pace_fb["short"]},
         {"area": "volume", "severity": volume_fb["severity"], "text": volume_fb["message"], "short": volume_fb["short"]},
@@ -369,70 +549,90 @@ def overall_feedback(pace_fb: dict, volume_fb: dict, pause_fb: dict, pitch_fb: d
         {"area": "pitch", "severity": pitch_fb["severity"], "text": pitch_fb["message"], "short": pitch_fb["short"]},
     ]
 
+    messages = apply_persistence(messages)
+
     issues = [m for m in messages if m["severity"] != "ok"]
-    issues.sort(key=lambda x: sev_rank(x["severity"]), reverse=True)
 
     if not issues:
-        return "Good", "Good delivery overall.", issues
+        return "Good", "Good delivery overall.", messages
+
+    priority = {"pace": 4, "pauses": 3, "pitch": 2, "volume": 1}
+    issues.sort(key=lambda x: (sev_rank(x["severity"]), priority.get(x["area"], 0)), reverse=True)
 
     top = issues[0]
+
     if top["severity"] == "alert":
-        return "Needs attention", f"Main tip: {top['short']}.", issues
+        return "Needs attention", f"Main tip: {top['short']}.", messages
 
-    return "Mostly good", f"Main tip: {top['short']}.", issues
+    return "Mostly good", f"Main tip: {top['short']}.", messages
 
 
-# ------------------------------------------------------------------ #
-#  Main analysis                                                      #
-# ------------------------------------------------------------------ #
+# ============================================================
+# Main analysis
+# ============================================================
 
-pace_history: deque = deque(maxlen=3)
-
-def analyze(y: np.ndarray) -> dict | None:
-    if len(y) / SR < 0.5:
+def analyze(y: np.ndarray) -> dict[str, Any] | None:
+    if len(y) / SR < MIN_ANALYZE_SEC:
         return None
+
+    y = np.asarray(y, dtype=np.float32)
+    y = y - float(np.mean(y))
 
     y_sp, speaking_time = speech_only(y)
 
-    wpm = measure_pace(y_sp, speaking_time)
-    avg_dbfs = measure_volume(y_sp)
-    long_pauses, sil = measure_pauses(y)
+    if speaking_time < 0.5 or y_sp.size < int(SR * 0.25):
+        return None
+
+    wpm_raw = measure_pace(y_sp, speaking_time)
+    avg_dbfs_raw = measure_volume(y_sp)
+    long_pauses, silence_ratio = measure_pauses(y)
 
     try:
-        pitch_range, vr = measure_pitch_range(y_sp)
+        pitch_range_raw, voiced_ratio = measure_pitch_range(y_sp)
     except (SystemError, KeyboardInterrupt):
-        raise KeyboardInterrupt
+        raise
+    except Exception:
+        pitch_range_raw, voiced_ratio = 0.0, 0.0
 
-    snr = avg_dbfs - noise_floor_dbfs
-    low_vol_threshold = noise_floor_dbfs + MIN_SNR_DB
+    silence_pct_raw = silence_ratio * 100.0
+    snr_raw = avg_dbfs_raw - noise_floor_dbfs
 
-    pace_history.append(wpm)
-    pace_for_feedback = wpm
-    if len(pace_history) == 3:
-        if all(v > FAST_WPM for v in pace_history):
-            pace_for_feedback = max(pace_history)
-        elif all(v < SLOW_WPM for v in pace_history) and speaking_time > 0.5:
-            pace_for_feedback = min(pace_history)
-        else:
-            pace_for_feedback = float(np.median(pace_history))
+    pace_history.append(wpm_raw)
+    volume_history.append(avg_dbfs_raw)
+    pitch_history.append(pitch_range_raw)
+    silence_history.append(silence_pct_raw)
 
-    pace_fb = pace_feedback(pace_for_feedback, speaking_time)
-    volume_fb = volume_feedback(avg_dbfs, snr, low_vol_threshold)
-    pause_fb = pause_feedback(long_pauses, sil * 100.0)
-    pitch_fb = pitch_feedback(pitch_range, vr)
+    wpm = _median_or_default(pace_history, wpm_raw)
+    avg_dbfs = _median_or_default(volume_history, avg_dbfs_raw)
+    pitch_range = _median_or_default(pitch_history, pitch_range_raw)
+    silence_pct = _median_or_default(silence_history, silence_pct_raw)
+    snr_db = avg_dbfs - noise_floor_dbfs
+
+    thresholds = get_dynamic_thresholds()
+
+    pace_fb = pace_feedback(wpm, speaking_time, thresholds)
+    volume_fb = volume_feedback(avg_dbfs, snr_db, thresholds)
+    pause_fb = pause_feedback(long_pauses, silence_pct, thresholds)
+    pitch_fb = pitch_feedback(pitch_range, voiced_ratio, thresholds)
 
     overall, headline, messages = overall_feedback(pace_fb, volume_fb, pause_fb, pitch_fb)
 
     return {
         "metrics": {
-            "wpm": round(wpm, 1),
-            "avg_dbfs": round(avg_dbfs, 1),
-            "snr_db": round(snr, 1),
-            "pitch_range": round(pitch_range, 1),
-            "voiced_ratio": round(vr, 3),
+            "wpm": round(wpm_raw, 1),
+            "wpm_smoothed": round(wpm, 1),
+            "avg_dbfs": round(avg_dbfs_raw, 1),
+            "avg_dbfs_smoothed": round(avg_dbfs, 1),
+            "snr_db": round(snr_raw, 1),
+            "snr_db_smoothed": round(snr_db, 1),
+            "pitch_range": round(pitch_range_raw, 1),
+            "pitch_range_smoothed": round(pitch_range, 1),
+            "voiced_ratio": round(voiced_ratio, 3),
             "long_pauses": long_pauses,
-            "silence_pct": round(sil * 100, 1),
+            "silence_pct": round(silence_pct_raw, 1),
+            "silence_pct_smoothed": round(silence_pct, 1),
             "speaking_time_s": round(speaking_time, 2),
+            "noise_floor_dbfs": round(noise_floor_dbfs, 1),
         },
         "status": {
             "overall": overall,
@@ -443,11 +643,26 @@ def analyze(y: np.ndarray) -> dict | None:
             "pitch": pitch_fb["label"],
         },
         "messages": messages,
-        "raw_alerts": [m["text"] for m in messages],
+        "raw_alerts": [m["text"] for m in messages if m["severity"] != "ok"],
+        "thresholds": {k: round(v, 2) for k, v in thresholds.items()},
+        "baseline": {k: round(v, 2) for k, v in user_baseline.items()},
     }
 
 
-def fmt(r: dict) -> str:
+def fmt_live_alerts(r: dict[str, Any]) -> str:
+    status = r["status"]
+    messages = r["messages"]
+
+    lines = [f"{status['overall']}: {status['headline']}"]
+
+    for msg in messages:
+        if msg["severity"] != "ok":
+            lines.append(f"{severity_prefix(msg['severity'])} {msg['area'].capitalize()}: {msg['short']}")
+
+    return "\n".join(lines)
+
+
+def fmt(r: dict[str, Any]) -> str:
     m = r["metrics"]
     s = r["status"]
 
@@ -464,18 +679,18 @@ def fmt(r: dict) -> str:
     if SHOW_RAW_METRICS:
         lines.extend([
             "",
-            f"Estimated pace: {m['wpm']:.0f} WPM",
-            f"Volume level:   {m['avg_dbfs']:.0f} dBFS  (SNR {m['snr_db']:.0f} dB)",
-            f"Pitch range:    {m['pitch_range']:.0f} Hz",
-            f"Silence:        {m['silence_pct']:.0f}%",
+            f"Estimated pace: {m['wpm_smoothed']:.0f} WPM",
+            f"Volume level:   {m['avg_dbfs_smoothed']:.0f} dBFS  (SNR {m['snr_db_smoothed']:.0f} dB)",
+            f"Pitch range:    {m['pitch_range_smoothed']:.0f} Hz",
+            f"Silence:        {m['silence_pct_smoothed']:.0f}%",
         ])
 
     return "\n".join(lines)
 
 
-# ------------------------------------------------------------------ #
-#  Session stats                                                      #
-# ------------------------------------------------------------------ #
+# ============================================================
+# Session stats
+# ============================================================
 
 class SessionStats:
     def __init__(self):
@@ -499,13 +714,13 @@ class SessionStats:
             "pitch_alert": 0,
         }
 
-    def add(self, r: dict):
+    def add(self, r: dict[str, Any]):
         m = r["metrics"]
-        self.wpm.append(m["wpm"])
-        self.dbfs.append(m["avg_dbfs"])
-        self.snr.append(m["snr_db"])
-        self.pitch.append(m["pitch_range"])
-        self.sil.append(m["silence_pct"])
+        self.wpm.append(m.get("wpm_smoothed", m["wpm"]))
+        self.dbfs.append(m.get("avg_dbfs_smoothed", m["avg_dbfs"]))
+        self.snr.append(m.get("snr_db_smoothed", m["snr_db"]))
+        self.pitch.append(m.get("pitch_range_smoothed", m["pitch_range"]))
+        self.sil.append(m.get("silence_pct_smoothed", m["silence_pct"]))
         self.overall.append(r["status"]["overall"])
         self.headlines.append(r["status"]["headline"])
 
@@ -524,23 +739,25 @@ class SessionStats:
         return ranked[0][0]
 
     def _what_went_well(self) -> list[str]:
-        good = []
+        good: list[str] = []
 
         wpm_med = self._med(self.wpm)
         snr_med = self._med(self.snr)
         pitch_med = self._med(self.pitch)
         sil_med = self._med(self.sil)
 
-        if SLOW_WPM <= wpm_med <= FAST_WPM:
+        thresholds = get_dynamic_thresholds()
+
+        if thresholds["slow_wpm"] <= wpm_med <= thresholds["fast_wpm"]:
             good.append("Your pace was generally in a comfortable range.")
 
-        if snr_med >= MIN_SNR_DB and self._med(self.dbfs) <= HIGH_VOL_DBFS:
+        if snr_med >= MIN_SNR_DB and self._med(self.dbfs) <= thresholds["loud_dbfs"]:
             good.append("Your volume was usually easy to hear.")
 
-        if pitch_med >= MONOTONE_HZ + 10:
+        if pitch_med >= thresholds["monotone_hz"] + 8:
             good.append("You showed healthy vocal variety.")
 
-        if 8 <= sil_med <= 40 and self.area_counts["pauses_alert"] == 0:
+        if thresholds["pause_dense_pct"] <= sil_med <= thresholds["pause_heavy_pct"] and self.area_counts["pauses_alert"] == 0:
             good.append("Your pauses were mostly natural.")
 
         if not good:
@@ -549,15 +766,15 @@ class SessionStats:
         return good
 
     def _areas_to_improve(self) -> list[str]:
-        improve = []
+        improve: list[str] = []
 
         if self.area_counts["pace_alert"] > 0:
-            improve.append("Your pace ran fast at times.")
+            improve.append("Your pace ran fast or slow enough at times to affect clarity.")
         elif self.area_counts["pace_watch"] > 0:
             improve.append("Your pace drifted a little outside the ideal range at times.")
 
         if self.area_counts["volume_alert"] > 0:
-            improve.append("Your volume sometimes made you hard to hear or overly forceful.")
+            improve.append("Your volume sometimes made you hard to hear.")
         elif self.area_counts["volume_watch"] > 0:
             improve.append("Your volume could be a bit more consistent.")
 
@@ -566,7 +783,9 @@ class SessionStats:
         elif self.area_counts["pauses_watch"] > 0:
             improve.append("Your pacing could flow a little more smoothly between ideas.")
 
-        if self.area_counts["pitch_watch"] > 0 or self.area_counts["pitch_alert"] > 0:
+        if self.area_counts["pitch_alert"] > 0:
+            improve.append("Your voice sounded flat at times and could use stronger emphasis.")
+        elif self.area_counts["pitch_watch"] > 0:
             improve.append("You could sound more dynamic by adding vocal variation and emphasis.")
 
         return improve
@@ -585,7 +804,7 @@ class SessionStats:
         }
         return mapping.get(top, "Keep practicing with steady pace, clear volume, and natural emphasis.")
 
-    def summary(self) -> dict:
+    def summary(self) -> dict[str, Any]:
         session_s = round(time.time() - self.t0, 1)
 
         return {
@@ -602,15 +821,16 @@ class SessionStats:
             "what_went_well": self._what_went_well(),
             "areas_to_improve": self._areas_to_improve(),
             "next_step": self._next_step(),
+            "baseline": {k: round(v, 2) for k, v in user_baseline.items()},
         }
 
 
-# ------------------------------------------------------------------ #
-#  Repetition control for live output                                 #
-# ------------------------------------------------------------------ #
+# ============================================================
+# Repetition guard
+# ============================================================
 
 class MessageRepeaterGuard:
-    def __init__(self, cooldown_s: float = 3.0):
+    def __init__(self, cooldown_s: float = MESSAGE_COOLDOWN_SEC):
         self.cooldown_s = cooldown_s
         self.last_headline = ""
         self.last_print_t = 0.0
@@ -629,13 +849,15 @@ class MessageRepeaterGuard:
         return False
 
 
-# ------------------------------------------------------------------ #
-#  Entry point                                                        #
-# ------------------------------------------------------------------ #
+# ============================================================
+# CLI entry point
+# ============================================================
 
 def main():
-    global noise_floor_dbfs
-    noise_floor_dbfs = calibrate(1.5)
+    global noise_floor_dbfs, user_baseline
+
+    noise_floor_dbfs = calibrate_noise(NOISE_CALIBRATION_SEC)
+    user_baseline = calibrate_user(USER_CALIBRATION_SEC)
 
     print("Monitoring — press Ctrl+C to stop.\n")
 
@@ -656,9 +878,9 @@ def main():
                 buffer.extend(chunk)
 
                 now = time.time()
-                if now - last_update >= UPDATE_SEC and len(buffer) >= int(SR * 0.5):
+                if now - last_update >= UPDATE_SEC and len(buffer) >= int(SR * MIN_ANALYZE_SEC):
                     y = np.array(buffer, dtype=np.float32)
-                    y -= float(np.mean(y))   
+                    y -= float(np.mean(y))
 
                     result = analyze(y)
                     if result:
@@ -671,6 +893,7 @@ def main():
 
     except (KeyboardInterrupt, SystemError):
         summary = stats.summary()
+
         print("\n=== SESSION SUMMARY ===")
         print(f"Session length: {summary['session_s']}s")
         print(f"Analysis windows: {summary['windows']}\n")
@@ -690,6 +913,9 @@ def main():
 
         print("Median metrics:")
         print(json.dumps(summary["medians"], indent=2))
+
+        print("\nBaseline:")
+        print(json.dumps(summary["baseline"], indent=2))
 
         if SAVE_SUMMARY_JSON:
             Path(SAVE_SUMMARY_JSON).write_text(

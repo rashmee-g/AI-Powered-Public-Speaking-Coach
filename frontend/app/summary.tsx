@@ -8,6 +8,7 @@ import {
 } from "react-native";
 import { useLocalSearchParams } from "expo-router";
 import FeedbackCard from "../components/FeedbackCard";
+import AppHeader from "../components/AppHeader";
 
 export default function SummaryScreen() {
   const params = useLocalSearchParams<{ data?: string }>();
@@ -29,6 +30,9 @@ export default function SummaryScreen() {
         <Text style={styles.subtitle}>
           Review your results and focus on the biggest improvement areas.
         </Text>
+
+        {/* 🔥 Global Header (Home button + title) */}
+        <AppHeader title="" />
 
         <FeedbackCard
           title="Speech Delivery"

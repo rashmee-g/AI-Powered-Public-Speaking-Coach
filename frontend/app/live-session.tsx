@@ -17,6 +17,7 @@ import { Audio } from "expo-av";
 import CameraPreview from "../components/CameraPreview";
 import FeedbackCard from "../components/FeedbackCard";
 import StatusPill from "../components/StatusPill";
+import AppHeader from "../components/AppHeader";
 import {
   analyzeAudioChunk,
   analyzeContent,
@@ -26,6 +27,39 @@ import {
   normalizeRouteParam,
   readCoachWebSession,
 } from "../services/api";
+
+const AUDIO_CHUNK_MS = 1800;
+const FRAME_INTERVAL_MS = 2000;
+
+function appendTranscriptSafe(previous: string, incoming: string): string {
+  const prev = previous.trim();
+  const next = incoming.trim();
+
+  if (!next) return prev;
+  if (!prev) return next;
+
+  if (prev.toLowerCase().endsWith(next.toLowerCase())) {
+    return prev;
+  }
+
+  const prevWords = prev.split(/\s+/);
+  const nextWords = next.split(/\s+/);
+
+  const maxOverlap = Math.min(prevWords.length, nextWords.length, 12);
+  let overlap = 0;
+
+  for (let k = maxOverlap; k >= 1; k--) {
+    const prevTail = prevWords.slice(-k).join(" ").toLowerCase();
+    const nextHead = nextWords.slice(0, k).join(" ").toLowerCase();
+    if (prevTail === nextHead) {
+      overlap = k;
+      break;
+    }
+  }
+
+  const merged = [...prevWords, ...nextWords.slice(overlap)].join(" ").trim();
+  return merged;
+}
 
 export default function LiveSessionScreen() {
   const params = useLocalSearchParams<{
@@ -65,14 +99,16 @@ export default function LiveSessionScreen() {
   const [speechStatus, setSpeechStatus] = useState("Starting mic...");
   const [bodyStatus, setBodyStatus] = useState("Waiting");
   const [emotionStatus, setEmotionStatus] = useState("Waiting");
-  const [contentStatus, setContentStatus] = useState("Not checked");
+  const [contentStatus, setContentStatus] = useState("Listening for content...");
 
   const [transcript, setTranscript] = useState("");
   const [loadingContent, setLoadingContent] = useState(false);
   const [ending, setEnding] = useState(false);
 
   const isAnalyzingFrameRef = useRef(false);
+  const isAnalyzingAudioRef = useRef(false);
   const sessionExpiredAlertShownRef = useRef(false);
+  const audioLoopCancelledRef = useRef(false);
 
   useEffect(() => {
     sessionExpiredAlertShownRef.current = false;
@@ -108,7 +144,7 @@ export default function LiveSessionScreen() {
         setAudioPermissionGranted(false);
       }
     })();
-  }, []);
+  }, [requestCameraPermission]);
 
   useEffect(() => {
     if (!cameraPermission?.granted || !sessionId) return;
@@ -129,6 +165,7 @@ export default function LiveSessionScreen() {
         const result = await analyzeFrame(sessionId, photo.base64);
 
         setEmotionStatus(result.emotion || "Unknown");
+
         const bodyLabel =
           typeof result.body_summary === "string" && result.body_summary
             ? result.body_summary
@@ -137,7 +174,6 @@ export default function LiveSessionScreen() {
               : "No posture issues detected";
 
         setBodyStatus(bodyLabel);
-
         setLiveTip(result.live_tip || "Keep going.");
       } catch (err: any) {
         console.log("Frame analysis error:", err?.response?.data || err?.message || err);
@@ -147,7 +183,7 @@ export default function LiveSessionScreen() {
       } finally {
         isAnalyzingFrameRef.current = false;
       }
-    }, 2000);
+    }, FRAME_INTERVAL_MS);
 
     return () => clearInterval(interval);
   }, [cameraPermission?.granted, sessionId]);
@@ -155,10 +191,10 @@ export default function LiveSessionScreen() {
   const startChunkRecording = async () => {
     if (!audioPermissionGranted) {
       setSpeechStatus("Mic permission needed");
-      return;
+      return false;
     }
 
-    if (recordingRef.current) return;
+    if (recordingRef.current) return true;
 
     try {
       const recording = new Audio.Recording();
@@ -167,22 +203,26 @@ export default function LiveSessionScreen() {
 
       recordingRef.current = recording;
       setSpeechStatus("Listening");
+      return true;
     } catch (err: any) {
       console.log("Start recording error:", err?.message || err);
       setSpeechStatus("Mic error");
+      return false;
     }
   };
 
   const stopChunkAndAnalyze = async () => {
+    if (isAnalyzingAudioRef.current) return;
+
     const recording = recordingRef.current;
     if (!recording) return;
 
     try {
+      isAnalyzingAudioRef.current = true;
       setSpeechStatus("Analyzing");
 
       await recording.stopAndUnloadAsync();
       const uri = recording.getURI();
-
       recordingRef.current = null;
 
       if (!uri) {
@@ -190,49 +230,70 @@ export default function LiveSessionScreen() {
       }
 
       const result = await analyzeAudioChunk(sessionId, uri);
+      console.log("audio chunk result:", result);
 
       setSpeechStatus(result?.status?.overall || "Analyzed");
 
-      if (result?.status?.headline) {
-        setLiveTip(result.status.headline);
-      } else if (result?.live_tip) {
+      if (typeof result?.transcript === "string" && result.transcript.trim()) {
+        setTranscript((prev) => appendTranscriptSafe(prev, result.transcript));
+      }
+
+      if (result?.ai_content_tip) {
+        setContentStatus(result.ai_content_tip);
+      } else if (result?.transcript) {
+        setContentStatus("Transcript updated");
+      }
+
+      if (result?.live_tip) {
         setLiveTip(result.live_tip);
       }
     } catch (err: any) {
       console.log("Audio analyze error:", err?.response?.data || err?.message || err);
+
       if (axios.isAxiosError(err) && err.response?.status === 404) {
         alertSessionExpiredOnce();
         return;
       }
+
       if (axios.isAxiosError(err) && err.response?.status === 422) {
         setSpeechStatus("Audio upload rejected");
         return;
       }
+
       setSpeechStatus("Analyze error");
+    } finally {
+      isAnalyzingAudioRef.current = false;
     }
   };
 
   useEffect(() => {
     if (!sessionId || !audioPermissionGranted) return;
 
-    let cancelled = false;
+    audioLoopCancelledRef.current = false;
 
     const runAudioLoop = async () => {
-      while (!cancelled) {
-        await startChunkRecording();
+      while (!audioLoopCancelledRef.current) {
+        const started = await startChunkRecording();
+        if (!started) {
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          continue;
+        }
 
-        await new Promise((resolve) => setTimeout(resolve, 2000));
+        await new Promise((resolve) => setTimeout(resolve, AUDIO_CHUNK_MS));
 
-        if (cancelled) break;
+        if (audioLoopCancelledRef.current) break;
 
         await stopChunkAndAnalyze();
+
+        await new Promise((resolve) => setTimeout(resolve, 150));
       }
     };
 
     runAudioLoop();
 
     return () => {
-      cancelled = true;
+      audioLoopCancelledRef.current = true;
+
       const recording = recordingRef.current;
       if (recording) {
         recording.stopAndUnloadAsync().catch(() => {});
@@ -243,7 +304,7 @@ export default function LiveSessionScreen() {
 
   const onCheckContent = async () => {
     if (!transcript.trim()) {
-      Alert.alert("Transcript needed", "Paste a sample transcript first.");
+      Alert.alert("Transcript needed", "Speak first so a transcript can be checked.");
       return;
     }
 
@@ -265,25 +326,32 @@ export default function LiveSessionScreen() {
         keyPoints
       );
 
-      setContentStatus(
-        res.topic_status === "on_topic" ? "On topic" : "Topic drift"
-      );
+      if (res?.ai_content_tip) {
+        setContentStatus(res.ai_content_tip);
+      } else {
+        setContentStatus(
+          res?.topic_status === "on_topic" ? "On topic" : "Topic drift"
+        );
+      }
 
       setLiveTip(
-        res.topic_status === "on_topic"
-          ? "Your content matches your planned topic."
-          : "Try staying closer to your outline."
+        res?.ai_content_tip ||
+          (res?.topic_status === "on_topic"
+            ? "Your content matches your planned topic."
+            : "Try staying closer to your outline.")
       );
     } catch (err: any) {
       if (axios.isAxiosError(err) && err.response?.status === 404) {
         alertSessionExpiredOnce();
         return;
       }
+
       const detail = err?.response?.data?.detail;
       const message =
         typeof detail === "string"
           ? detail
           : err?.message || "Could not analyze content";
+
       Alert.alert("Content Error", message);
     } finally {
       setLoadingContent(false);
@@ -293,6 +361,7 @@ export default function LiveSessionScreen() {
   const onEndSession = async () => {
     try {
       setEnding(true);
+      audioLoopCancelledRef.current = true;
 
       const recording = recordingRef.current;
       if (recording) {
@@ -300,6 +369,8 @@ export default function LiveSessionScreen() {
       }
 
       const res = await endSession(sessionId);
+
+      clearCoachWebSession();
 
       router.push({
         pathname: "/summary",
@@ -312,6 +383,7 @@ export default function LiveSessionScreen() {
         alertSessionExpiredOnce();
         return;
       }
+
       Alert.alert(
         "End Session Error",
         err?.response?.data?.detail || err?.message || "Failed to end session"
@@ -324,44 +396,51 @@ export default function LiveSessionScreen() {
   return (
     <SafeAreaView style={styles.safe}>
       <ScrollView contentContainerStyle={styles.container}>
-        <Text style={styles.title}>Live Practice Session</Text>
-        <Text style={styles.sessionText}>Session ID: {sessionId || "(none)"}</Text>
-
+  
+        {/* 🔥 Global Header (Home button + title) */}
+        <AppHeader title="Live Practice Session" />
+  
+        {/* Session Info */}
+        
+        <Text style={styles.sessionText}>
+          Session ID: {sessionId || "(none)"}
+        </Text>
+  
         {!sessionId ? (
           <Text style={styles.warn}>
-            No active session. Go back and tap &quot;Start Practice Session&quot; (required after
-            each backend restart).
+            No active session. Go back and start a new one.
           </Text>
         ) : null}
-
+  
+        {/* 🎥 Camera */}
         <CameraPreview
           ref={cameraRef}
           hasPermission={cameraPermission ? cameraPermission.granted : null}
         />
-
-        <FeedbackCard
-          title="Live Coaching Tip"
-          value={liveTip}
-          subtitle="Speech and camera feedback update this card continuously."
-        />
-
+  
+        {/* 💬 Live Tip */}
+        <FeedbackCard title="Live Coaching Tips" value={liveTip} />
+  
+        {/* 📊 Status Pills */}
         <View style={styles.pillsRow}>
           <StatusPill label="Speech" value={speechStatus} />
           <StatusPill label="Body" value={bodyStatus} />
           <StatusPill label="Emotion" value={emotionStatus} />
           <StatusPill label="Content" value={contentStatus} />
         </View>
-
+  
+        {/* 🧠 Transcript + Content */}
         <View style={styles.card}>
           <Text style={styles.sectionTitle}>Transcript / Content Check</Text>
+  
           <TextInput
             style={[styles.input, styles.multiline]}
-            placeholder="Paste transcript here to test content analysis..."
+            placeholder="Transcription will load here..."
             value={transcript}
             onChangeText={setTranscript}
             multiline
           />
-
+  
           <TouchableOpacity
             style={styles.secondaryBtn}
             onPress={onCheckContent}
@@ -372,7 +451,8 @@ export default function LiveSessionScreen() {
             </Text>
           </TouchableOpacity>
         </View>
-
+  
+        {/* 🔚 End Session */}
         <TouchableOpacity
           style={[styles.primaryBtn, ending && { opacity: 0.7 }]}
           onPress={onEndSession}
@@ -382,6 +462,7 @@ export default function LiveSessionScreen() {
             {ending ? "Ending..." : "End Session"}
           </Text>
         </TouchableOpacity>
+  
       </ScrollView>
     </SafeAreaView>
   );

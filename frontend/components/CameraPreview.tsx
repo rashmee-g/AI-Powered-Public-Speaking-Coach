@@ -2,6 +2,7 @@ import React, { forwardRef } from "react";
 import { StyleSheet, Text, View } from "react-native";
 import { CameraView } from "expo-camera";
 
+
 type Props = {
   hasPermission: boolean | null;
 };
@@ -34,7 +35,7 @@ export default CameraPreview;
 
 const styles = StyleSheet.create({
   container: {
-    height: 260,
+    height: 500,
     borderRadius: 20,
     overflow: "hidden",
     marginBottom: 16,

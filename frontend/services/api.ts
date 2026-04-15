@@ -53,7 +53,7 @@ export function normalizeRouteParam(value: string | string[] | undefined): strin
 
 /** Uvicorn default is 8000 when you omit `--port`. Override with EXPO_PUBLIC_API_URL or EXPO_PUBLIC_API_PORT. */
 function apiPort(): string {
-  return process.env.EXPO_PUBLIC_API_PORT?.trim() || "8000";
+  return process.env.EXPO_PUBLIC_API_PORT?.trim() || "8001";
 }
 
 /**
@@ -147,6 +147,7 @@ export async function analyzeContent(
     expected_text: expectedText,
     key_points: keyPoints ?? [],
   });
+
   return res.data;
 }
 
@@ -182,8 +183,14 @@ export async function analyzeAudioChunk(sessionId: string, uri: string) {
     } as any);
   }
 
+  
   // Let axios set multipart boundary (manual Content-Type breaks browser uploads).
   const res = await api.post("/analyze/audio-chunk", formData);
 
   return res.data;
+}
+
+export function isSessionExpiredError(err: any): boolean {
+  const detail = err?.response?.data?.detail;
+  return typeof detail === "string" && detail.toLowerCase().includes("session not found");
 }
