@@ -301,3 +301,10 @@ export async function login(username: string, password: string) {
   });
   return res.data;
 }
+
+export async function deleteSession(sessionId: string, username: string) {
+  const res = await api.delete(`/sessions/${sessionId}`, {
+    params: { username },
+  });
+  return res.data;
+}

@@ -18,6 +18,7 @@ import {
   getSessionReport,
   readCoachUser,
   clearCoachUser,
+  deleteSession,
   type SessionListItem,
 } from "../services/api";
 
@@ -167,6 +168,27 @@ export default function HomeScreen() {
     return <Redirect href="/login" />;
   }
 
+  const handleDeleteSession = async (item: SessionListItem) => {
+    try {
+      const user = readCoachUser();
+      if (!user?.username) {
+        router.replace("/login");
+        return;
+      }
+  
+      await deleteSession(item.session_id, user.username);
+  
+      setSavedSessions((prev) =>
+        prev.filter((session) => session.session_id !== item.session_id)
+      );
+    } catch (err: any) {
+      Alert.alert(
+        "Delete Error",
+        err?.response?.data?.detail || err?.message || "Could not delete session"
+      );
+    }
+  };
+
   return (
     <SafeAreaView style={styles.safe}>
       <ScrollView contentContainerStyle={styles.container}>
@@ -269,19 +291,28 @@ export default function HomeScreen() {
                   <Text style={styles.sessionMeta}>
                     {formatDate(item.created_at)}
                   </Text>
-            
+          
                   <Text style={styles.sessionPreview} numberOfLines={2}>
                     {item.overall_feedback?.[0] ||
                       item.expected_text ||
                       "Open summary report"}
                   </Text>
-            
-                  <TouchableOpacity
-                    style={styles.smallPrimaryBtn}
-                    onPress={() => handleOpenOldSession(item)}
-                  >
-                    <Text style={styles.smallPrimaryBtnText}>Open Report</Text>
-                  </TouchableOpacity>
+
+                  <View style={styles.buttonRow}>
+                    <TouchableOpacity
+                      style={styles.primaryBtnSmall}
+                      onPress={() => handleOpenOldSession(item)}
+                    >
+                      <Text style={styles.primaryTextSmall}>Open Report</Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={styles.deleteBtnSmall}
+                      onPress={() => handleDeleteSession(item)}
+                    >
+                      <Text style={styles.deleteTextSmall}>Delete</Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
             
                 {item.session_grade ? (
@@ -503,7 +534,40 @@ const styles = StyleSheet.create({
     color: "#6b7280",
     fontWeight: "500",
   },
+
+  buttonRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10, // spacing between buttons
+    marginTop: 10,
+  },
   
+  primaryBtnSmall: {
+    backgroundColor: "#2563eb",
+    borderRadius: 14,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+  },
+  
+  primaryTextSmall: {
+    color: "#fff",
+    fontWeight: "600",
+    fontSize: 14,
+  },
+  
+  deleteBtnSmall: {
+    backgroundColor: "#fee2e2",
+    borderRadius: 14,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+  },
+  
+  deleteTextSmall: {
+    color: "#b91c1c",
+    fontWeight: "600",
+    fontSize: 14,
+  },
+
   smallDeleteBtn: {
     backgroundColor: "#e5e7eb",
     borderRadius: 12,
@@ -513,8 +577,30 @@ const styles = StyleSheet.create({
     marginBottom: 16,
     alignSelf: "flex-start",
   },
+  
   smallDeleteBtnText: {
     color: "#111827",
     fontWeight: "700",
+  },
+
+  sessionButtonRow: {
+    flexDirection: "row",
+    gap: 12,
+    alignItems: "center",
+  },
+  
+  deleteBtn: {
+    backgroundColor: "#fee2e2",
+    borderRadius: 18,
+    paddingVertical: 14,
+    paddingHorizontal: 22,
+    alignItems: "center",
+    alignSelf: "flex-start",
+  },
+  
+  deleteBtnText: {
+    color: "#b91c1c",
+    fontWeight: "700",
+    fontSize: 16,
   },
 });

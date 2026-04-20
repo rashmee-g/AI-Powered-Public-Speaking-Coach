@@ -998,3 +998,17 @@ async def login(payload: LoginRequest):
         raise HTTPException(status_code=401, detail="Invalid username or password.")
 
     return {"status": "ok", "username": username}
+
+@app.delete("/sessions/{session_id}")
+async def delete_session(session_id: str, username: str):
+    username = username.strip().lower()
+
+    result = await sessions_collection.delete_one({
+        "session_id": session_id,
+        "username": username,
+    })
+
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Session not found.")
+
+    return {"status": "ok", "deleted_session_id": session_id}
