@@ -171,7 +171,7 @@ export default function HomeScreen() {
     <SafeAreaView style={styles.safe}>
       <ScrollView contentContainerStyle={styles.container}>
         <View style={styles.heroCard}>
-          <Text style={styles.title}>AI Public Speaking Coach</Text>
+          <Text style={styles.title}>SpeakEZ</Text>
           <Text style={styles.subtitle}>
             Practice your speech with live multimodal feedback on delivery,
             body language, emotion, and content alignment.
@@ -263,24 +263,19 @@ export default function HomeScreen() {
           ) : (
             savedSessions.map((item) => (
               <View key={item.session_id} style={styles.sessionRow}>
-                <View style={styles.sessionInfo}>
+                <View style={styles.sessionLeft}>
                   <Text style={styles.sessionIdText}>{item.session_id}</Text>
+            
                   <Text style={styles.sessionMeta}>
                     {formatDate(item.created_at)}
                   </Text>
+            
                   <Text style={styles.sessionPreview} numberOfLines={2}>
                     {item.overall_feedback?.[0] ||
                       item.expected_text ||
                       "Open summary report"}
                   </Text>
-                  {item.key_points?.length > 0 ? (
-                    <Text style={styles.sessionMeta}>
-                      Key points: {item.key_points.join(", ")}
-                    </Text>
-                  ) : null}
-                </View>
-
-                <View style={styles.sessionActions}>
+            
                   <TouchableOpacity
                     style={styles.smallPrimaryBtn}
                     onPress={() => handleOpenOldSession(item)}
@@ -288,6 +283,23 @@ export default function HomeScreen() {
                     <Text style={styles.smallPrimaryBtnText}>Open Report</Text>
                   </TouchableOpacity>
                 </View>
+            
+                {item.session_grade ? (
+                  <View style={styles.gradeCard}>
+                    <Text style={styles.gradeLetter}>
+                      {item.session_grade.letter}
+                    </Text>
+            
+                    <View style={styles.gradeDivider} />
+            
+                    <View style={styles.gradeRight}>
+                      <Text style={styles.gradeScore}>
+                        {item.session_grade.score}/100
+                      </Text>
+                      <Text style={styles.gradeLabel}>Session Grade</Text>
+                    </View>
+                  </View>
+                ) : null}
               </View>
             ))
           )}
@@ -402,44 +414,96 @@ const styles = StyleSheet.create({
   },
   sessionRow: {
     backgroundColor: "#f9fafb",
-    borderRadius: 16,
-    padding: 14,
-    marginBottom: 12,
+    borderRadius: 20,
+    padding: 20,
+    marginBottom: 16,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 20,
   },
-  sessionInfo: {
+  
+  sessionLeft: {
+    flex: 1,
+  },
+  
+  sessionIdText: {
+    fontSize: 18,
+    fontWeight: "800",
+    color: "#111827",
+    marginBottom: 8,
+  },
+  
+  sessionMeta: {
+    fontSize: 14,
+    color: "#6b7280",
     marginBottom: 10,
   },
-  sessionIdText: {
-    fontSize: 13,
-    fontWeight: "700",
-    color: "#111827",
-    marginBottom: 4,
-  },
-  sessionMeta: {
-    fontSize: 12,
-    color: "#6b7280",
-    marginBottom: 4,
-  },
+  
   sessionPreview: {
-    fontSize: 14,
+    fontSize: 16,
+    lineHeight: 24,
     color: "#374151",
-    marginBottom: 4,
+    marginBottom: 18,
   },
-  sessionActions: {
-    flexDirection: "row",
-    gap: 10,
-  },
+  
   smallPrimaryBtn: {
     backgroundColor: "#2563eb",
-    borderRadius: 12,
-    paddingVertical: 10,
-    paddingHorizontal: 16,
+    borderRadius: 18,
+    paddingVertical: 14,
+    paddingHorizontal: 26,
     alignItems: "center",
+    alignSelf: "flex-start",
   },
+  
   smallPrimaryBtnText: {
     color: "#ffffff",
     fontWeight: "700",
+    fontSize: 16,
   },
+  
+  gradeCard: {
+    minWidth: 250,
+    backgroundColor: "#eef2ff",
+    borderRadius: 22,
+    paddingVertical: 26,
+    paddingHorizontal: 26,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  
+  gradeLetter: {
+    fontSize: 56,
+    fontWeight: "800",
+    color: "#2563eb",
+    marginRight: 20,
+  },
+  
+  gradeDivider: {
+    width: 1,
+    alignSelf: "stretch",
+    backgroundColor: "#93c5fd",
+    marginRight: 20,
+  },
+  
+  gradeRight: {
+    justifyContent: "center",
+  },
+  
+  gradeScore: {
+    fontSize: 24,
+    fontWeight: "800",
+    color: "#111827",
+    marginBottom: 6,
+  },
+  
+  gradeLabel: {
+    fontSize: 15,
+    color: "#6b7280",
+    fontWeight: "500",
+  },
+  
   smallDeleteBtn: {
     backgroundColor: "#e5e7eb",
     borderRadius: 12,

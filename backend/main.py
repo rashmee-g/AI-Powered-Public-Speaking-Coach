@@ -37,7 +37,8 @@ app.add_middleware(
 
 # Keep live rolling speech stats in memory during active sessions.
 # MongoDB stores persistent session/report data.
-LIVE_SPEECH_STATS: dict[str, SessionStats] = {}
+LIVE_SPEECH_STATS: dict[str, dict[str, Any]] = {}
+LIVE_POSE_STATES: dict[str, dict[str, Any]] = {}
 
 
 # -----------------------------
@@ -258,6 +259,158 @@ def safe_content_analysis(
             "ai_content_tip": f"Content analysis failed: {e}",
         }
 
+def clamp_score(value: float, low: float = 0.0, high: float = 100.0) -> float:
+    return max(low, min(high, value))
+
+
+def score_speech(speech_summary: dict[str, Any]) -> tuple[float, dict[str, float]]:
+    score = 40.0
+    issues = speech_summary.get("issue_counts", {})
+    medians = speech_summary.get("medians", {})
+
+    # Penalize repeated issue windows
+    score -= 4.0 * issues.get("pace_alert", 0)
+    score -= 2.0 * issues.get("pace_watch", 0)
+
+    score -= 4.0 * issues.get("volume_alert", 0)
+    score -= 2.0 * issues.get("volume_watch", 0)
+
+    score -= 4.0 * issues.get("pauses_alert", 0)
+    score -= 2.0 * issues.get("pauses_watch", 0)
+
+    score -= 4.0 * issues.get("pitch_alert", 0)
+    score -= 2.0 * issues.get("pitch_watch", 0)
+
+    # Small reward for healthy medians
+    wpm = medians.get("estimated_wpm", 0.0)
+    if 115 <= wpm <= 175:
+        score += 2.0
+
+    pitch_range = medians.get("pitch_range_hz", 0.0)
+    if pitch_range >= 35:
+        score += 2.0
+
+    score = clamp_score(score, 0.0, 40.0)
+
+    return score, {
+        "wpm": float(wpm),
+        "pitch_range_hz": float(pitch_range),
+        "silence_pct": float(medians.get("silence_pct", 0.0)),
+    }
+
+
+def score_content(latest_content: dict[str, Any] | None) -> float:
+    if not latest_content:
+        return 10.0
+
+    similarity = float(latest_content.get("similarity_score", 0.0))
+    missed_points = latest_content.get("missed_points", []) or []
+    topic_status = latest_content.get("topic_status", "no_content")
+
+    score = similarity * 30.0
+
+    # Penalty for missed key points
+    score -= min(len(missed_points) * 2.0, 8.0)
+
+    if topic_status == "topic_drift":
+        score -= 6.0
+    elif topic_status == "no_content":
+        score = min(score, 8.0)
+    elif topic_status == "not_checked":
+        score = min(score, 15.0)
+
+    return clamp_score(score, 0.0, 30.0)
+
+
+def score_body(body_summary: dict[str, Any]) -> float:
+    score = 20.0
+    counts = body_summary.get("counts", {}) or {}
+
+    score -= 3.0 * counts.get("Hand fidgeting detected", 0)
+    score -= 3.0 * counts.get("Looking around", 0)
+    score -= 3.0 * counts.get("Slouching posture", 0)
+    score -= 3.0 * counts.get("Excessive body sway", 0)
+
+    return clamp_score(score, 0.0, 20.0)
+
+
+def score_emotion(emotion_summary: dict[str, Any]) -> float:
+    dominant = emotion_summary.get("dominant_emotion", "unknown")
+
+    if dominant in ("happy", "neutral", "confident"):
+        return 10.0
+    if dominant in ("surprise",):
+        return 8.0
+    if dominant in ("fear", "sad", "angry", "disgust"):
+        return 5.0
+    return 7.0
+
+
+def letter_grade(score: float) -> str:
+    if score >= 97:
+        return "A+"
+    if score >= 93:
+        return "A"
+    if score >= 90:
+        return "A-"
+    if score >= 87:
+        return "B+"
+    if score >= 83:
+        return "B"
+    if score >= 80:
+        return "B-"
+    if score >= 77:
+        return "C+"
+    if score >= 73:
+        return "C"
+    if score >= 70:
+        return "C-"
+    if score >= 67:
+        return "D+"
+    if score >= 63:
+        return "D"
+    if score >= 60:
+        return "D-"
+    return "F"
+
+
+def grade_session(
+    speech_summary: dict[str, Any],
+    body_summary: dict[str, Any],
+    emotion_summary: dict[str, Any],
+    latest_content: dict[str, Any] | None,
+) -> dict[str, Any]:
+    speech_score, speech_details = score_speech(speech_summary)
+    content_score = score_content(latest_content)
+    body_score = score_body(body_summary)
+    emotion_score = score_emotion(emotion_summary)
+
+    total_score = round(speech_score + content_score + body_score + emotion_score, 1)
+    grade = letter_grade(total_score)
+
+    if total_score >= 90:
+        summary = "Excellent session overall with strong delivery and content control."
+    elif total_score >= 80:
+        summary = "Strong session overall with a few improvement areas."
+    elif total_score >= 70:
+        summary = "Solid progress, but there are still noticeable areas to improve."
+    elif total_score >= 60:
+        summary = "This was a useful practice session, but several speaking areas need work."
+    else:
+        summary = "Early practice stage — keep building consistency in delivery and content."
+
+    return {
+        "score": total_score,
+        "letter": grade,
+        "breakdown": {
+            "speech": round(speech_score, 1),
+            "content": round(content_score, 1),
+            "body": round(body_score, 1),
+            "emotion": round(emotion_score, 1),
+        },
+        "details": speech_details,
+        "summary": summary,
+    }
 
 def safe_ai_feedback(
     transcript: str,
@@ -327,6 +480,7 @@ async def list_completed_sessions(username: str):
             "emotion_summary": 1,
             "body_summary": 1,
             "content_summary": 1,
+            "session_grade": 1,
         },
     ).sort("created_at", -1)
 
@@ -372,6 +526,7 @@ async def start_session(payload: StartSessionRequest):
 
     await sessions_collection.insert_one(session_doc)
     LIVE_SPEECH_STATS[session_id] = SessionStats()
+    LIVE_POSE_STATES[session_id] = default_pose_state()
 
     return {
         "session_id": session_id,
@@ -391,7 +546,7 @@ async def analyze_frame(payload: FrameRequest):
         print("Emotion analysis error:", e)
         emotion_raw = "unknown"
 
-    pose_state = session.get("pose_state") or default_pose_state()
+    pose_state = LIVE_POSE_STATES.setdefault(payload.session_id, default_pose_state())
 
     try:
         body_feedback = analyze_pose_frame(frame, pose_state)
@@ -776,6 +931,13 @@ async def end_session(payload: dict[str, str]):
             overall_feedback.append("Try staying more closely aligned with your planned message.")
         elif latest_content.get("ai_content_tip"):
             overall_feedback.append(latest_content["ai_content_tip"])
+    
+    session_grade = grade_session(
+    speech_summary=speech_summary,
+    body_summary=body_summary,
+    emotion_summary=emotion_summary,
+    latest_content=latest_content,
+    )
 
     response = {
         "session_id": session_id,
@@ -785,6 +947,7 @@ async def end_session(payload: dict[str, str]):
         "content_summary": latest_content,
         "latest_transcript": session.get("latest_transcript", ""),
         "overall_feedback": overall_feedback,
+        "session_grade": session_grade,
     }
 
     await sessions_collection.update_one(
@@ -798,11 +961,13 @@ async def end_session(payload: dict[str, str]):
                 "body_summary": body_summary,
                 "content_summary": latest_content,
                 "overall_feedback": overall_feedback,
+                "session_grade": session_grade,
             }
         },
     )
 
     LIVE_SPEECH_STATS.pop(session_id, None)
+    LIVE_POSE_STATES.pop(session_id, None)
     return response
 
 @app.post("/auth/signup")

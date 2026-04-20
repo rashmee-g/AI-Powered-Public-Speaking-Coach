@@ -20,6 +20,18 @@ export type SessionListItem = {
   emotion_summary?: any;
   body_summary?: any;
   content_summary?: any;
+
+  session_grade?: {
+    score: number;
+    letter: string;
+    breakdown?: {
+      speech: number;
+      content: number;
+      body: number;
+      emotion: number;
+    };
+    summary?: string;
+  };
 };
 
 export type SessionReport = {
@@ -36,6 +48,8 @@ export type SessionReport = {
   content_summary?: any;
   overall_feedback?: string[];
 };
+
+
 
 /** Persist session on web so refresh keeps the same backend session id. */
 export function persistCoachWebSession(payload: CoachWebSessionPayload) {
