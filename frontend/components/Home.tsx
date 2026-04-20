@@ -30,7 +30,10 @@ export default function StartSessionCard() {
         key_points: keyPoints,
       });
 
-      const sessionId = res.session_id;
+      const sessionId = String(res?.session_id || "");
+      if (!sessionId) {
+        throw new Error("No session ID returned from backend.");
+      }
 
       persistCoachWebSession({
         sessionId,
@@ -47,7 +50,10 @@ export default function StartSessionCard() {
         },
       });
     } catch (err: any) {
-      Alert.alert("Error", err?.message || "Failed to start session");
+      Alert.alert(
+        "Error",
+        err?.response?.data?.detail || err?.message || "Failed to start session"
+      );
     } finally {
       setLoading(false);
     }
@@ -72,7 +78,7 @@ export default function StartSessionCard() {
         onChangeText={setKeyPointsText}
       />
 
-      <TouchableOpacity style={styles.button} onPress={handleStart}>
+      <TouchableOpacity style={styles.button} onPress={handleStart} disabled={loading}>
         <Text style={styles.buttonText}>
           {loading ? "Starting..." : "Start Practice"}
         </Text>
@@ -101,6 +107,7 @@ const styles = StyleSheet.create({
   },
   large: {
     minHeight: 100,
+    textAlignVertical: "top",
   },
   button: {
     backgroundColor: "#2563eb",

@@ -10,6 +10,33 @@ export type CoachWebSessionPayload = {
   keyPoints: string[];
 };
 
+export type SessionListItem = {
+  session_id: string;
+  created_at: number;
+  expected_text: string;
+  key_points: string[];
+  overall_feedback?: string[];
+  speech_summary?: any;
+  emotion_summary?: any;
+  body_summary?: any;
+  content_summary?: any;
+};
+
+export type SessionReport = {
+  session_id: string;
+  created_at?: number;
+  updated_at?: number;
+  status?: string;
+  expected_text?: string;
+  key_points?: string[];
+  latest_transcript?: string;
+  speech_summary?: any;
+  emotion_summary?: any;
+  body_summary?: any;
+  content_summary?: any;
+  overall_feedback?: string[];
+};
+
 /** Persist session on web so refresh keeps the same backend session id. */
 export function persistCoachWebSession(payload: CoachWebSessionPayload) {
   if (Platform.OS !== "web" || typeof window === "undefined") {
@@ -94,7 +121,6 @@ if (__DEV__) {
 
 export const api = axios.create({
   baseURL: API_BASE_URL,
-  /** DeepFace / first model load can exceed 15s; short timeouts look like “broken” APIs. */
   timeout: 120000,
 });
 
@@ -116,6 +142,7 @@ api.interceptors.response.use(
 );
 
 export async function startSession(payload: {
+  username: string;
   expected_text?: string;
   key_points?: string[];
 }) {
@@ -183,14 +210,80 @@ export async function analyzeAudioChunk(sessionId: string, uri: string) {
     } as any);
   }
 
-  
-  // Let axios set multipart boundary (manual Content-Type breaks browser uploads).
   const res = await api.post("/analyze/audio-chunk", formData);
+  return res.data;
+}
 
+/** Fetch all completed session reports from MongoDB-backed backend */
+export async function getCompletedSessions(username: string): Promise<SessionListItem[]> {
+  const res = await api.get("/sessions", {
+    params: { username },
+  });
+  return res.data;
+}
+
+/** Fetch one full session report by session_id */
+export async function getSessionReport(sessionId: string, username: string): Promise<SessionReport> {
+  const res = await api.get(`/sessions/${sessionId}`, {
+    params: { username },
+  });
   return res.data;
 }
 
 export function isSessionExpiredError(err: any): boolean {
   const detail = err?.response?.data?.detail;
   return typeof detail === "string" && detail.toLowerCase().includes("session not found");
+}
+
+export const COACH_USER_KEY = "capstoneCoachUser_v1";
+
+export type CoachUserPayload = {
+  username: string;
+};
+
+export function persistCoachUser(payload: CoachUserPayload) {
+  if (Platform.OS !== "web" || typeof window === "undefined") {
+    return;
+  }
+  try {
+    window.localStorage.setItem(COACH_USER_KEY, JSON.stringify(payload));
+  } catch {}
+}
+
+export function readCoachUser(): CoachUserPayload | null {
+  if (Platform.OS !== "web" || typeof window === "undefined") {
+    return null;
+  }
+  try {
+    const raw = window.localStorage.getItem(COACH_USER_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as CoachUserPayload;
+  } catch {
+    return null;
+  }
+}
+
+export function clearCoachUser() {
+  if (Platform.OS !== "web" || typeof window === "undefined") {
+    return;
+  }
+  try {
+    window.localStorage.removeItem(COACH_USER_KEY);
+  } catch {}
+}
+
+export async function signup(username: string, password: string) {
+  const res = await api.post("/auth/signup", {
+    username,
+    password,
+  });
+  return res.data;
+}
+
+export async function login(username: string, password: string) {
+  const res = await api.post("/auth/login", {
+    username,
+    password,
+  });
+  return res.data;
 }

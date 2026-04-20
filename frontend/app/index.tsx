@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useCallback } from "react";
 import {
   Alert,
   SafeAreaView,
@@ -9,76 +9,35 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { router } from "expo-router";
-import { Platform } from "react-native";
+import { router, useFocusEffect , Redirect} from "expo-router";
 
 import {
   persistCoachWebSession,
   startSession,
+  getCompletedSessions,
+  getSessionReport,
+  readCoachUser,
+  clearCoachUser,
+  type SessionListItem,
 } from "../services/api";
 
-const HISTORY_STORAGE_KEY = "capstoneCoachSessionHistory_v1";
-
-type SavedSession = {
-  sessionId: string;
-  createdAt: string;
-  expectedText: string;
-  keyPoints: string[];
-};
-
-function readSavedSessions(): SavedSession[] {
-  if (Platform.OS !== "web" || typeof window === "undefined") {
-    return [];
-  }
-
+function formatDate(timestamp?: number) {
+  if (!timestamp) return "Unknown date";
   try {
-    const raw = window.localStorage.getItem(HISTORY_STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    return new Date(timestamp * 1000).toLocaleString();
   } catch {
-    return [];
-  }
-}
-
-function writeSavedSessions(items: SavedSession[]) {
-  if (Platform.OS !== "web" || typeof window === "undefined") {
-    return;
-  }
-
-  try {
-    window.localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(items));
-  } catch {
-    // ignore storage errors
-  }
-}
-
-function saveSessionToHistory(item: SavedSession) {
-  const existing = readSavedSessions();
-
-  const deduped = existing.filter((s) => s.sessionId !== item.sessionId);
-  const next = [item, ...deduped].slice(0, 20);
-
-  writeSavedSessions(next);
-}
-
-function formatDate(dateString: string) {
-  try {
-    return new Date(dateString).toLocaleString();
-  } catch {
-    return dateString;
+    return String(timestamp);
   }
 }
 
 export default function HomeScreen() {
+  const [username, setUsername] = useState("");
   const [expectedText, setExpectedText] = useState("");
   const [keyPointsText, setKeyPointsText] = useState("");
   const [starting, setStarting] = useState(false);
-  const [savedSessions, setSavedSessions] = useState<SavedSession[]>([]);
-
-  useEffect(() => {
-    setSavedSessions(readSavedSessions());
-  }, []);
+  const [loadingSessions, setLoadingSessions] = useState(false);
+  const [savedSessions, setSavedSessions] = useState<SessionListItem[]>([]);
+  const [authChecked, setAuthChecked] = useState(false);
 
   const parsedKeyPoints = useMemo(() => {
     return keyPointsText
@@ -87,11 +46,57 @@ export default function HomeScreen() {
       .filter(Boolean);
   }, [keyPointsText]);
 
+  useEffect(() => {
+    const user = readCoachUser();
+  
+    if (user?.username) {
+      setUsername(user.username);
+    }
+  
+    setAuthChecked(true);
+  }, []);
+
+  const loadCompletedSessions = useCallback(async () => {
+    try {
+      const user = readCoachUser();
+      if (!user?.username) {
+        setSavedSessions([]);
+        return;
+      }
+
+      setLoadingSessions(true);
+      const sessions = await getCompletedSessions(user.username);
+      setSavedSessions(sessions || []);
+    } catch (err: any) {
+      console.log("Failed to load sessions:", err?.response?.data || err?.message || err);
+      setSavedSessions([]);
+    } finally {
+      setLoadingSessions(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadCompletedSessions();
+  }, [loadCompletedSessions]);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadCompletedSessions();
+    }, [loadCompletedSessions])
+  );
+
   const handleStartSession = async () => {
     try {
+      const user = readCoachUser();
+      if (!user?.username) {
+        router.replace("/login");
+        return;
+      }
+
       setStarting(true);
 
       const res = await startSession({
+        username: user.username,
         expected_text: expectedText.trim(),
         key_points: parsedKeyPoints,
       });
@@ -106,16 +111,6 @@ export default function HomeScreen() {
         expectedText: expectedText.trim(),
         keyPoints: parsedKeyPoints,
       });
-
-      const historyItem: SavedSession = {
-        sessionId,
-        createdAt: new Date().toISOString(),
-        expectedText: expectedText.trim(),
-        keyPoints: parsedKeyPoints,
-      };
-
-      saveSessionToHistory(historyItem);
-      setSavedSessions(readSavedSessions());
 
       router.push({
         pathname: "/live-session",
@@ -135,28 +130,42 @@ export default function HomeScreen() {
     }
   };
 
-  const handleOpenOldSession = (item: SavedSession) => {
-    persistCoachWebSession({
-      sessionId: item.sessionId,
-      expectedText: item.expectedText,
-      keyPoints: item.keyPoints,
-    });
+  const handleOpenOldSession = async (item: SessionListItem) => {
+    try {
+      const user = readCoachUser();
+      if (!user?.username) {
+        router.replace("/login");
+        return;
+      }
 
-    router.push({
-      pathname: "/live-session",
-      params: {
-        sessionId: item.sessionId,
-        expectedText: item.expectedText,
-        keyPoints: JSON.stringify(item.keyPoints),
-      },
-    });
+      const report = await getSessionReport(item.session_id, user.username);
+
+      router.push({
+        pathname: "/summary",
+        params: {
+          data: JSON.stringify(report),
+        },
+      });
+    } catch (err: any) {
+      Alert.alert(
+        "Open Report Error",
+        err?.response?.data?.detail || err?.message || "Could not open session report"
+      );
+    }
   };
 
-  const handleDeleteSavedSession = (sessionId: string) => {
-    const next = savedSessions.filter((s) => s.sessionId !== sessionId);
-    setSavedSessions(next);
-    writeSavedSessions(next);
+  const handleLogout = () => {
+    clearCoachUser();
+    router.replace("/login");
   };
+
+  if (!authChecked) {
+    return null;
+  }
+  
+  if (!username) {
+    return <Redirect href="/login" />;
+  }
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -167,7 +176,12 @@ export default function HomeScreen() {
             Practice your speech with live multimodal feedback on delivery,
             body language, emotion, and content alignment.
           </Text>
+          {username ? <Text style={styles.userText}>Signed in as: {username}</Text> : null}
         </View>
+
+        <TouchableOpacity style={styles.smallDeleteBtn} onPress={handleLogout}>
+          <Text style={styles.smallDeleteBtnText}>Logout</Text>
+        </TouchableOpacity>
 
         <View style={styles.card}>
           <Text style={styles.sectionTitle}>Start a New Practice Session</Text>
@@ -231,8 +245,8 @@ export default function HomeScreen() {
           <View style={styles.bulletBlock}>
             <Text style={styles.bulletTitle}>Helpful for repeated practice</Text>
             <Text style={styles.bulletText}>
-              Since sessions are saved, you can revisit your previous practice
-              attempts and track how your speaking improves over time.
+              Sessions and summary reports are stored in the database, making it
+              easier to review past performance and track improvement over time.
             </Text>
           </View>
         </View>
@@ -240,24 +254,28 @@ export default function HomeScreen() {
         <View style={styles.card}>
           <Text style={styles.sectionTitle}>Previous Sessions</Text>
 
-          {savedSessions.length === 0 ? (
+          {loadingSessions ? (
+            <Text style={styles.emptyText}>Loading saved session reports...</Text>
+          ) : savedSessions.length === 0 ? (
             <Text style={styles.emptyText}>
-              No saved sessions yet. Start one above to see it here.
+              No completed sessions yet. Finish a session to see reports here.
             </Text>
           ) : (
             savedSessions.map((item) => (
-              <View key={item.sessionId} style={styles.sessionRow}>
+              <View key={item.session_id} style={styles.sessionRow}>
                 <View style={styles.sessionInfo}>
-                  <Text style={styles.sessionIdText}>{item.sessionId}</Text>
+                  <Text style={styles.sessionIdText}>{item.session_id}</Text>
                   <Text style={styles.sessionMeta}>
-                    {formatDate(item.createdAt)}
+                    {formatDate(item.created_at)}
                   </Text>
                   <Text style={styles.sessionPreview} numberOfLines={2}>
-                    {item.expectedText || "No expected text provided"}
+                    {item.overall_feedback?.[0] ||
+                      item.expected_text ||
+                      "Open summary report"}
                   </Text>
-                  {item.keyPoints.length > 0 ? (
+                  {item.key_points?.length > 0 ? (
                     <Text style={styles.sessionMeta}>
-                      Key points: {item.keyPoints.join(", ")}
+                      Key points: {item.key_points.join(", ")}
                     </Text>
                   ) : null}
                 </View>
@@ -267,14 +285,7 @@ export default function HomeScreen() {
                     style={styles.smallPrimaryBtn}
                     onPress={() => handleOpenOldSession(item)}
                   >
-                    <Text style={styles.smallPrimaryBtnText}>Open</Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={styles.smallDeleteBtn}
-                    onPress={() => handleDeleteSavedSession(item.sessionId)}
-                  >
-                    <Text style={styles.smallDeleteBtnText}>Delete</Text>
+                    <Text style={styles.smallPrimaryBtnText}>Open Report</Text>
                   </TouchableOpacity>
                 </View>
               </View>
@@ -316,6 +327,12 @@ const styles = StyleSheet.create({
     fontSize: 15,
     lineHeight: 22,
     color: "#4b5563",
+  },
+  userText: {
+    marginTop: 8,
+    fontSize: 14,
+    color: "#374151",
+    fontWeight: "600",
   },
   card: {
     backgroundColor: "#ffffff",
@@ -429,6 +446,8 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 16,
     alignItems: "center",
+    marginBottom: 16,
+    alignSelf: "flex-start",
   },
   smallDeleteBtnText: {
     color: "#111827",

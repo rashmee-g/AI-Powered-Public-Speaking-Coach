@@ -26,9 +26,10 @@ import {
   endSession,
   normalizeRouteParam,
   readCoachWebSession,
+  isSessionExpiredError,
 } from "../services/api";
 
-const AUDIO_CHUNK_MS = 1800;
+const AUDIO_CHUNK_MS = 4000;
 const FRAME_INTERVAL_MS = 2000;
 
 function appendTranscriptSafe(previous: string, incoming: string): string {
@@ -358,40 +359,80 @@ export default function LiveSessionScreen() {
     }
   };
 
-  const onEndSession = async () => {
-    try {
-      setEnding(true);
-      audioLoopCancelledRef.current = true;
+  const HISTORY_STORAGE_KEY = "capstoneCoachSessionHistory_v1";
 
-      const recording = recordingRef.current;
-      if (recording) {
-        await stopChunkAndAnalyze();
-      }
+function readSavedReports() {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(HISTORY_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
 
-      const res = await endSession(sessionId);
+function writeSavedReports(items: any[]) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(items));
+  } catch {}
+}
 
-      clearCoachWebSession();
+const onEndSession = async () => {
+  try {
+    setEnding(true);
+    audioLoopCancelledRef.current = true;
 
-      router.push({
-        pathname: "/summary",
-        params: {
-          data: JSON.stringify(res),
-        },
-      });
-    } catch (err: any) {
-      if (axios.isAxiosError(err) && err.response?.status === 404) {
-        alertSessionExpiredOnce();
-        return;
-      }
-
-      Alert.alert(
-        "End Session Error",
-        err?.response?.data?.detail || err?.message || "Failed to end session"
-      );
-    } finally {
-      setEnding(false);
+    const recording = recordingRef.current;
+    if (recording) {
+      await stopChunkAndAnalyze();
     }
-  };
+
+    if (!sessionId) {
+      throw new Error("No active session to end.");
+    }
+
+    const res = await endSession(sessionId);
+
+    const savedItem = {
+      sessionId,
+      createdAt: new Date().toISOString(),
+      expectedText,
+      keyPoints,
+      summary: res,
+    };
+
+    const existing = readSavedReports();
+    const next = [savedItem, ...existing.filter((x: any) => x.sessionId !== sessionId)].slice(0, 20);
+    writeSavedReports(next);
+
+    clearCoachWebSession();
+
+    router.push({
+      pathname: "/summary",
+      params: {
+        data: JSON.stringify(res),
+      },
+    });
+  } catch (err: any) {
+    if (isSessionExpiredError(err)) {
+      clearCoachWebSession();
+      Alert.alert(
+        "Session expired",
+        "Please go back and start a new session.",
+        [{ text: "OK", onPress: () => router.replace("/") }]
+      );
+      return;
+    }
+
+    Alert.alert(
+      "End Session Error",
+      err?.response?.data?.detail || err?.message || "Failed to end session"
+    );
+  } finally {
+    setEnding(false);
+  }
+};
 
   return (
     <SafeAreaView style={styles.safe}>

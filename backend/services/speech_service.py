@@ -43,14 +43,14 @@ TOP_DB = 28.0
 
 # Pitch / monotone defaults
 DEFAULT_MONOTONE_HZ = 25.0
-MIN_VOICED = 0.25
+MIN_VOICED = 0.4
 
 # Smoothing / persistence
 PACE_HISTORY_LEN = 5
 VOLUME_HISTORY_LEN = 5
 PITCH_HISTORY_LEN = 5
 SILENCE_HISTORY_LEN = 5
-ISSUE_PERSISTENCE_WINDOWS = 2
+ISSUE_PERSISTENCE_WINDOWS = 3
 MESSAGE_COOLDOWN_SEC = 3.0
 
 # Output
@@ -189,6 +189,30 @@ def calibrate_user(duration_s: float = USER_CALIBRATION_SEC) -> dict[str, float]
 # Feature extraction
 # ============================================================
 
+def is_actively_speaking(
+    audio: np.ndarray,
+    avg_dbfs: float,
+    voiced_ratio: float,
+    speaking_time_s: float,
+) -> bool:
+    # Too quiet overall
+    if avg_dbfs < -50:
+        return False
+
+    # Not enough voiced content
+    if voiced_ratio < 0.25:
+        return False
+
+    # Too little actual speech in the chunk
+    if speaking_time_s < 0.6:
+        return False
+
+    # Tiny/noisy chunks
+    if audio.size < 16000 * 0.5:  # less than 0.5 sec at 16kHz
+        return False
+
+    return True
+
 def measure_pace(y_speech: np.ndarray, speaking_time_s: float) -> float:
     if speaking_time_s < 0.4 or y_speech.size < SR * 0.2:
         return 0.0
@@ -323,7 +347,7 @@ def get_dynamic_thresholds() -> dict[str, float]:
     fast_wpm = max(DEFAULT_FAST_WPM, baseline_wpm + 25.0)
     slow_wpm = min(DEFAULT_SLOW_WPM, max(90.0, baseline_wpm - 35.0))
 
-    loud_dbfs = max(DEFAULT_HIGH_VOL_DBFS, baseline_dbfs + 8.0)
+    loud_dbfs = max(DEFAULT_HIGH_VOL_DBFS, baseline_dbfs + 10.0)
     quiet_dbfs = baseline_dbfs - 8.0
 
     monotone_hz = min(DEFAULT_MONOTONE_HZ, max(15.0, baseline_pitch * 0.6))
@@ -347,7 +371,7 @@ def get_dynamic_thresholds() -> dict[str, float]:
 # ============================================================
 
 def pace_feedback(wpm: float, speaking_time: float, thresholds: dict[str, float]) -> dict[str, str]:
-    if speaking_time < 0.7 or wpm <= 0:
+    if speaking_time < 1.2 or wpm <= 0:
         return {
             "label": "Waiting for more speech",
             "severity": "ok",
@@ -550,21 +574,26 @@ def overall_feedback(
     ]
 
     messages = apply_persistence(messages)
-
     issues = [m for m in messages if m["severity"] != "ok"]
 
     if not issues:
-        return "Good", "Good delivery overall.", messages
+        return "Good", "Your delivery sounds steady right now.", messages
 
-    priority = {"pace": 4, "pauses": 3, "pitch": 2, "volume": 1}
-    issues.sort(key=lambda x: (sev_rank(x["severity"]), priority.get(x["area"], 0)), reverse=True)
+    alerts = [m for m in issues if m["severity"] == "alert"]
+    watches = [m for m in issues if m["severity"] == "watch"]
 
-    top = issues[0]
+    if len(alerts) >= 2:
+        top_two = alerts[:2]
+        joined = " and ".join(m["short"].lower() for m in top_two)
+        return "Needs attention", f"Focus on {joined}.", messages
 
-    if top["severity"] == "alert":
-        return "Needs attention", f"Main tip: {top['short']}.", messages
+    if len(alerts) == 1:
+        return "Needs attention", alerts[0]["message"], messages
 
-    return "Mostly good", f"Main tip: {top['short']}.", messages
+    if len(watches) >= 2:
+        return "Mostly good", "Your delivery is mostly solid, but I’m watching a couple areas.", messages
+
+    return "Mostly good", watches[0]["message"], messages
 
 
 # ============================================================
@@ -593,6 +622,44 @@ def analyze(y: np.ndarray) -> dict[str, Any] | None:
         raise
     except Exception:
         pitch_range_raw, voiced_ratio = 0.0, 0.0
+
+    
+    if not is_actively_speaking(
+        audio=y,
+        avg_dbfs=avg_dbfs_raw,
+        voiced_ratio=voiced_ratio,
+        speaking_time_s=speaking_time,
+    ):
+        return {
+    "status": {
+        "overall": "Listening",
+        "headline": "Waiting for speech.",
+        "pace": "Waiting for more speech",
+        "volume": "Waiting for more speech",
+        "pauses": "Waiting for more speech",
+        "pitch": "Waiting for more speech",
+    },
+    "messages": [],
+    "metrics": {
+        "wpm": 0.0,
+        "wpm_smoothed": 0.0,
+        "avg_dbfs": -80.0,
+        "avg_dbfs_smoothed": -80.0,
+        "snr_db": 0.0,
+        "snr_db_smoothed": 0.0,
+        "pitch_range": 0.0,
+        "pitch_range_smoothed": 0.0,
+        "voiced_ratio": 0.0,
+        "long_pauses": 0,
+        "silence_pct": 0.0,
+        "silence_pct_smoothed": 0.0,
+        "speaking_time_s": 0.0,
+        "noise_floor_dbfs": round(noise_floor_dbfs, 1),
+    },
+    "raw_alerts": [],
+    "thresholds": {k: round(v, 2) for k, v in get_dynamic_thresholds().items()},
+    "baseline": {k: round(v, 2) for k, v in user_baseline.items()},
+}
 
     silence_pct_raw = silence_ratio * 100.0
     snr_raw = avg_dbfs_raw - noise_floor_dbfs
@@ -716,11 +783,11 @@ class SessionStats:
 
     def add(self, r: dict[str, Any]):
         m = r["metrics"]
-        self.wpm.append(m.get("wpm_smoothed", m["wpm"]))
-        self.dbfs.append(m.get("avg_dbfs_smoothed", m["avg_dbfs"]))
-        self.snr.append(m.get("snr_db_smoothed", m["snr_db"]))
-        self.pitch.append(m.get("pitch_range_smoothed", m["pitch_range"]))
-        self.sil.append(m.get("silence_pct_smoothed", m["silence_pct"]))
+        self.wpm.append(m.get("wpm_smoothed", m.get("wpm", 0.0)))
+        self.dbfs.append(m.get("avg_dbfs_smoothed", m.get("avg_dbfs", -80.0)))
+        self.snr.append(m.get("snr_db_smoothed", m.get("snr_db", 0.0)))
+        self.pitch.append(m.get("pitch_range_smoothed", m.get("pitch_range", 0.0)))
+        self.sil.append(m.get("silence_pct_smoothed", m.get("silence_pct", 0.0)))
         self.overall.append(r["status"]["overall"])
         self.headlines.append(r["status"]["headline"])
 

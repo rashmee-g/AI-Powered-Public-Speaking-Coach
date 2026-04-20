@@ -22,6 +22,7 @@ from backend.services.pose_service import analyze_pose_frame
 from backend.services.speech_service import SessionStats, analyze
 from backend.services.ai_feedback_service import generate_ai_feedback
 from backend.services import content_service
+from backend.db import sessions_collection, users_collection
 
 
 app = FastAPI(title="AI Public Speaking Coach API")
@@ -34,13 +35,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-SESSIONS: dict[str, dict[str, Any]] = {}
+# Keep live rolling speech stats in memory during active sessions.
+# MongoDB stores persistent session/report data.
+LIVE_SPEECH_STATS: dict[str, SessionStats] = {}
 
 
 # -----------------------------
 # Request models
 # -----------------------------
 class StartSessionRequest(BaseModel):
+    username: str
     expected_text: str = ""
     key_points: list[str] = Field(default_factory=list)
 
@@ -61,6 +65,14 @@ class ContentRequest(BaseModel):
     transcript: str | None = None
     expected_text: str | None = None
     key_points: list[str] | None = None
+
+class SignupRequest(BaseModel):
+    username: str
+    password: str
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
 
 
 # -----------------------------
@@ -148,7 +160,6 @@ def load_wav_to_float32(wav_path: str) -> np.ndarray:
 
         frames = wf.readframes(n_frames)
         audio_int16 = np.frombuffer(frames, dtype=np.int16)
-
         return audio_int16.astype(np.float32) / 32768.0
 
 
@@ -168,8 +179,8 @@ def write_temp_wav(audio: np.ndarray, sample_rate: int) -> str:
     return path
 
 
-def require_session(session_id: str) -> dict[str, Any]:
-    session = SESSIONS.get(session_id)
+async def require_session(session_id: str) -> dict[str, Any]:
+    session = await sessions_collection.find_one({"session_id": session_id})
     if not session:
         raise HTTPException(status_code=404, detail="Session not found.")
     return session
@@ -289,22 +300,68 @@ def root():
 
 
 @app.get("/status")
-def status():
+async def status():
+    active_sessions = await sessions_collection.count_documents({"status": "active"})
     return {
         "status": "ok",
-        "active_sessions": len(SESSIONS),
+        "active_sessions": active_sessions,
     }
 
 
-@app.post("/session/start")
-def start_session(payload: StartSessionRequest):
-    session_id = str(uuid.uuid4())
+@app.get("/sessions")
+async def list_completed_sessions(username: str):
+    username = username.strip().lower()
 
-    SESSIONS[session_id] = {
-        "created_at": time.time(),
+    sessions = []
+    cursor = sessions_collection.find(
+        {"status": "completed", "username": username},
+        {
+            "_id": 0,
+            "session_id": 1,
+            "username": 1,
+            "created_at": 1,
+            "expected_text": 1,
+            "key_points": 1,
+            "overall_feedback": 1,
+            "speech_summary": 1,
+            "emotion_summary": 1,
+            "body_summary": 1,
+            "content_summary": 1,
+        },
+    ).sort("created_at", -1)
+
+    async for doc in cursor:
+        sessions.append(doc)
+
+    return sessions
+
+
+@app.get("/sessions/{session_id}")
+async def get_session_report(session_id: str, username: str):
+    username = username.strip().lower()
+
+    session = await sessions_collection.find_one(
+        {"session_id": session_id, "username": username},
+        {"_id": 0},
+    )
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    return session
+
+
+@app.post("/session/start")
+async def start_session(payload: StartSessionRequest):
+    session_id = str(uuid.uuid4())
+    now = time.time()
+
+    session_doc = {
+        "session_id": session_id,
+        "username": payload.username.strip().lower(),
+        "created_at": now,
+        "updated_at": now,
+        "status": "active",
         "expected_text": payload.expected_text,
         "key_points": payload.key_points,
-        "speech_stats": SessionStats(),
         "emotion_log": [],
         "pose_state": default_pose_state(),
         "body_feedback_log": [],
@@ -313,6 +370,9 @@ def start_session(payload: StartSessionRequest):
         "content_history": [],
     }
 
+    await sessions_collection.insert_one(session_doc)
+    LIVE_SPEECH_STATS[session_id] = SessionStats()
+
     return {
         "session_id": session_id,
         "status": "started",
@@ -320,8 +380,8 @@ def start_session(payload: StartSessionRequest):
 
 
 @app.post("/analyze/frame")
-def analyze_frame(payload: FrameRequest):
-    session = require_session(payload.session_id)
+async def analyze_frame(payload: FrameRequest):
+    session = await require_session(payload.session_id)
     frame = decode_base64_image(payload.image_base64)
     frame = cv2.flip(frame, 1)
 
@@ -331,10 +391,7 @@ def analyze_frame(payload: FrameRequest):
         print("Emotion analysis error:", e)
         emotion_raw = "unknown"
 
-    pose_state = session.get("pose_state")
-    if pose_state is None:
-        pose_state = default_pose_state()
-        session["pose_state"] = pose_state
+    pose_state = session.get("pose_state") or default_pose_state()
 
     try:
         body_feedback = analyze_pose_frame(frame, pose_state)
@@ -342,14 +399,23 @@ def analyze_frame(payload: FrameRequest):
         print("Pose analysis error:", e)
         body_feedback = []
 
+    update_ops: dict[str, Any] = {
+        "$set": {
+            "updated_at": time.time(),
+        }
+    }
+
     if emotion_raw and emotion_raw not in ("...", "", "unknown"):
-        session["emotion_log"].append(emotion_raw)
+        update_ops.setdefault("$push", {})["emotion_log"] = emotion_raw
 
     if body_feedback:
-        session["body_feedback_log"].extend(body_feedback)
+        update_ops.setdefault("$push", {})["body_feedback_log"] = {
+            "$each": body_feedback
+        }
+
+    await sessions_collection.update_one({"session_id": payload.session_id}, update_ops)
 
     body_summary = "; ".join(body_feedback[:2]) if body_feedback else "No posture issues detected"
-
     live_tip = choose_live_tip(
         speech_headline=None,
         body_feedback=body_feedback,
@@ -365,8 +431,8 @@ def analyze_frame(payload: FrameRequest):
 
 
 @app.post("/analyze/audio")
-def analyze_audio(payload: AudioRequest):
-    session = require_session(payload.session_id)
+async def analyze_audio(payload: AudioRequest):
+    await require_session(payload.session_id)
     audio = decode_base64_audio_to_float32(payload.audio_base64)
 
     result = analyze(audio)
@@ -378,11 +444,23 @@ def analyze_audio(payload: AudioRequest):
                 "headline": "Keep speaking so I can analyze your delivery.",
             },
             "messages": [],
-            "metrics": {},
+            "metrics": {
+                "wpm": 0,
+                "avg_dbfs": -80,
+                "snr_db": 0,
+                "pitch_range_hz": 0,
+                "silence_pct": 0,
+            },
             "live_tip": "Keep speaking so I can analyze your delivery.",
         }
 
-    session["speech_stats"].add(result)
+    stats = LIVE_SPEECH_STATS.setdefault(payload.session_id, SessionStats())
+    stats.add(result)
+
+    await sessions_collection.update_one(
+        {"session_id": payload.session_id},
+        {"$set": {"updated_at": time.time()}},
+    )
 
     return {
         "status": result["status"],
@@ -398,7 +476,7 @@ async def analyze_audio_chunk(
     session_id: str = Form(...),
     audio_file: UploadFile = File(...),
 ):
-    session = require_session(session_id)
+    session = await require_session(session_id)
 
     suffix = os.path.splitext(audio_file.filename or "")[1] or ".m4a"
     fd, input_path = tempfile.mkstemp(suffix=suffix)
@@ -420,6 +498,8 @@ async def analyze_audio_chunk(
 
         try:
             result = analyze(audio)
+            if result is not None and "wpm" not in result.get("metrics", {}):
+                result = None
         except Exception as e:
             print("Speech analyze() error:", e)
             result = None
@@ -427,35 +507,47 @@ async def analyze_audio_chunk(
         expected_text = session.get("expected_text", "")
         key_points = session.get("key_points", [])
 
-        content_result = safe_content_analysis(
-            transcript=transcript,
-            expected_text=expected_text,
-            key_points=key_points,
-        ) if transcript and expected_text else {
-            "transcript": transcript,
-            "similarity_score": 0.0,
-            "missed_points": [],
-            "topic_status": "not_checked" if transcript else "no_content",
-            "ai_content_tip": (
-                "Transcript captured, but no expected speech was provided."
-                if transcript and not expected_text
-                else "Not enough spoken content yet."
-            ),
+        content_result = (
+            safe_content_analysis(
+                transcript=transcript,
+                expected_text=expected_text,
+                key_points=key_points,
+            )
+            if transcript and expected_text
+            else {
+                "transcript": transcript,
+                "similarity_score": 0.0,
+                "missed_points": [],
+                "topic_status": "not_checked" if transcript else "no_content",
+                "ai_content_tip": (
+                    "Transcript captured, but no expected speech was provided."
+                    if transcript and not expected_text
+                    else "Not enough spoken content yet."
+                ),
+            }
+        )
+
+        update_ops: dict[str, Any] = {
+            "$set": {
+                "updated_at": time.time(),
+            }
         }
 
         if transcript:
-            session["latest_transcript"] = transcript
-            session["chunk_transcripts"].append(transcript)
+            update_ops["$set"]["latest_transcript"] = transcript
+            update_ops.setdefault("$push", {})["chunk_transcripts"] = transcript
 
         if result is None:
-            session["content_history"].append({
+            content_entry = {
                 "transcript": transcript,
                 "ai_content_tip": content_result.get("ai_content_tip", ""),
                 "topic_status": content_result.get("topic_status", "no_content"),
                 "similarity_score": content_result.get("similarity_score", 0.0),
                 "missed_points": content_result.get("missed_points", []),
                 "timestamp": time.time(),
-            })
+            }
+            update_ops.setdefault("$push", {})["content_history"] = content_entry
+            await sessions_collection.update_one({"session_id": session_id}, update_ops)
 
             return {
                 "status": {
@@ -464,6 +556,11 @@ async def analyze_audio_chunk(
                 },
                 "messages": [],
                 "metrics": {
+                    "wpm": 0,
+                    "avg_dbfs": -80,
+                    "snr_db": 0,
+                    "pitch_range_hz": 0,
+                    "silence_pct": 0,
                     "duration_s": round(duration_s, 2),
                     "max_amp": round(max_amp, 4),
                 },
@@ -482,7 +579,8 @@ async def analyze_audio_chunk(
                 },
             }
 
-        session["speech_stats"].add(result)
+        stats = LIVE_SPEECH_STATS.setdefault(session_id, SessionStats())
+        stats.add(result)
 
         ai_feedback = safe_ai_feedback(
             transcript=transcript,
@@ -495,7 +593,7 @@ async def analyze_audio_chunk(
         if not ai_feedback.get("content_tip") and content_result.get("ai_content_tip"):
             ai_feedback["content_tip"] = content_result["ai_content_tip"]
 
-        session["content_history"].append({
+        content_entry = {
             "transcript": transcript,
             "ai_content_tip": ai_feedback.get("content_tip", ""),
             "positive_note": ai_feedback.get("positive_note", ""),
@@ -504,7 +602,10 @@ async def analyze_audio_chunk(
             "similarity_score": content_result.get("similarity_score", 0.0),
             "missed_points": content_result.get("missed_points", []),
             "timestamp": time.time(),
-        })
+        }
+
+        update_ops.setdefault("$push", {})["content_history"] = content_entry
+        await sessions_collection.update_one({"session_id": session_id}, update_ops)
 
         return {
             "status": result["status"],
@@ -544,11 +645,11 @@ async def analyze_audio_chunk(
 
 
 @app.post("/analyze/content")
-def analyze_content_route(payload: ContentRequest):
-    session = require_session(payload.session_id)
+async def analyze_content_route(payload: ContentRequest):
+    session = await require_session(payload.session_id)
 
-    expected_text = payload.expected_text or session["expected_text"]
-    key_points = payload.key_points or session["key_points"]
+    expected_text = payload.expected_text or session.get("expected_text", "")
+    key_points = payload.key_points or session.get("key_points", [])
     transcript = payload.transcript
 
     if not transcript:
@@ -566,21 +667,31 @@ def analyze_content_route(payload: ContentRequest):
         key_points=key_points,
     )
 
-    session["latest_transcript"] = transcript
-    session["content_history"].append({
-        **result,
-        "timestamp": time.time(),
-    })
+    await sessions_collection.update_one(
+        {"session_id": payload.session_id},
+        {
+            "$set": {
+                "latest_transcript": transcript,
+                "updated_at": time.time(),
+            },
+            "$push": {
+                "content_history": {
+                    **result,
+                    "timestamp": time.time(),
+                }
+            },
+        },
+    )
 
     return result
 
 
 @app.post("/transcribe-and-analyze-content")
-def transcribe_and_analyze_content(payload: AudioRequest):
-    session = require_session(payload.session_id)
+async def transcribe_and_analyze_content(payload: AudioRequest):
+    session = await require_session(payload.session_id)
 
-    expected_text = session["expected_text"]
-    key_points = session["key_points"]
+    expected_text = session.get("expected_text", "")
+    key_points = session.get("key_points", [])
 
     if not expected_text:
         raise HTTPException(status_code=400, detail="No expected_text stored in this session.")
@@ -597,11 +708,21 @@ def transcribe_and_analyze_content(payload: AudioRequest):
             key_points=key_points,
         )
 
-        session["latest_transcript"] = transcript
-        session["content_history"].append({
-            **result,
-            "timestamp": time.time(),
-        })
+        await sessions_collection.update_one(
+            {"session_id": payload.session_id},
+            {
+                "$set": {
+                    "latest_transcript": transcript,
+                    "updated_at": time.time(),
+                },
+                "$push": {
+                    "content_history": {
+                        **result,
+                        "timestamp": time.time(),
+                    }
+                },
+            },
+        )
 
         return {
             **result,
@@ -615,16 +736,18 @@ def transcribe_and_analyze_content(payload: AudioRequest):
 
 
 @app.post("/session/end")
-def end_session(payload: dict[str, str]):
+async def end_session(payload: dict[str, str]):
     session_id = payload.get("session_id")
     if not session_id:
         raise HTTPException(status_code=400, detail="session_id is required.")
 
-    session = require_session(session_id)
+    session = await require_session(session_id)
 
-    speech_summary = session["speech_stats"].summary()
-    emotion_counts = Counter(session["emotion_log"])
-    body_counts = Counter(session["body_feedback_log"])
+    stats = LIVE_SPEECH_STATS.get(session_id, SessionStats())
+    speech_summary = stats.summary()
+
+    emotion_counts = Counter(session.get("emotion_log", []))
+    body_counts = Counter(session.get("body_feedback_log", []))
 
     top_emotion = emotion_counts.most_common(1)[0][0] if emotion_counts else "unknown"
 
@@ -638,7 +761,8 @@ def end_session(payload: dict[str, str]):
         "dominant_emotion": top_emotion,
     }
 
-    latest_content = session["content_history"][-1] if session["content_history"] else None
+    content_history = session.get("content_history", [])
+    latest_content = content_history[-1] if content_history else None
 
     overall_feedback: list[str] = []
     overall_feedback.extend(speech_summary.get("what_went_well", []))
@@ -654,6 +778,7 @@ def end_session(payload: dict[str, str]):
             overall_feedback.append(latest_content["ai_content_tip"])
 
     response = {
+        "session_id": session_id,
         "speech_summary": speech_summary,
         "emotion_summary": emotion_summary,
         "body_summary": body_summary,
@@ -662,5 +787,49 @@ def end_session(payload: dict[str, str]):
         "overall_feedback": overall_feedback,
     }
 
-    del SESSIONS[session_id]
+    await sessions_collection.update_one(
+        {"session_id": session_id},
+        {
+            "$set": {
+                "status": "completed",
+                "updated_at": time.time(),
+                "speech_summary": speech_summary,
+                "emotion_summary": emotion_summary,
+                "body_summary": body_summary,
+                "content_summary": latest_content,
+                "overall_feedback": overall_feedback,
+            }
+        },
+    )
+
+    LIVE_SPEECH_STATS.pop(session_id, None)
     return response
+
+@app.post("/auth/signup")
+async def signup(payload: SignupRequest):
+    username = payload.username.strip().lower()
+
+    if not username or not payload.password:
+        raise HTTPException(status_code=400, detail="Username and password are required.")
+    
+    existing = await users_collection.find_one({"username": username})
+    if existing: 
+        raise HTTPException(status_code=400, detail="Username already exists.")
+    
+    await users_collection.insert_one({
+        "username": username,
+        "password": payload.password,
+        "created_at": time.time(),
+    })
+
+    return {"status": "ok", "username": username}
+
+@app.post("/auth/login")
+async def login(payload: LoginRequest):
+    username = payload.username.strip().lower()
+
+    user = await users_collection.find_one({"username": username})
+    if not user or user.get("password") != payload.password:
+        raise HTTPException(status_code=401, detail="Invalid username or password.")
+
+    return {"status": "ok", "username": username}
