@@ -13,8 +13,10 @@ export type CoachWebSessionPayload = {
 
 export type SessionListItem = {
   session_id: string;
+  session_group_id?: string;
   title?: string;
   created_at: number;
+  updated_at?: number;
   expected_text: string;
   key_points: string[];
   overall_feedback?: string[];
@@ -22,6 +24,28 @@ export type SessionListItem = {
   emotion_summary?: any;
   body_summary?: any;
   content_summary?: any;
+  attempt_count?: number;
+  latest_attempt_id?: string;
+  attempts?: {
+    attempt_id: string;
+    session_id: string;
+    created_at?: number;
+    updated_at?: number;
+    transcript_preview?: string;
+    latest_transcript?: string;
+    overall_score?: number;
+    session_grade?: {
+      score: number;
+      letter: string;
+      breakdown?: {
+        speech: number;
+        content: number;
+        body: number;
+        emotion: number;
+      };
+      summary?: string;
+    };
+  }[];
 
   session_grade?: {
     score: number;
@@ -160,6 +184,7 @@ api.interceptors.response.use(
 export async function startSession(payload: {
   username: string;
   title?: string;
+  session_group_id?: string;
   expected_text?: string;
   key_points?: string[];
 }) {

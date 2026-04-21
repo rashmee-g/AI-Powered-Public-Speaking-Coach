@@ -9,7 +9,11 @@ import {
 } from "react-native";
 import { router } from "expo-router";
 
-import { startSession, persistCoachWebSession } from "../services/api";
+import {
+  persistCoachWebSession,
+  readCoachUser,
+  startSession,
+} from "../services/api";
 
 export default function StartSessionCard() {
   const [expectedText, setExpectedText] = useState("");
@@ -23,10 +27,16 @@ export default function StartSessionCard() {
 
   const handleStart = async () => {
     try {
+      const user = readCoachUser();
+      if (!user?.username) {
+        router.replace("/login");
+        return;
+      }
+
       setLoading(true);
 
       const res = await startSession({
-        title: title,
+        username: user.username,
         expected_text: expectedText,
         key_points: keyPoints,
       });

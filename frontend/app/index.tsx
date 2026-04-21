@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Alert,
+  Image,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -38,20 +39,6 @@ function formatDate(timestamp?: number) {
   } catch {
     return String(timestamp);
   }
-}
-
-function formatDuration(item: SessionListItem) {
-  if (item.speech_summary?.duration_label) {
-    return String(item.speech_summary.duration_label);
-  }
-
-  if (typeof item.speech_summary?.duration_seconds === "number") {
-    const seconds = item.speech_summary.duration_seconds;
-    if (seconds < 60) return `${seconds}s`;
-    return `${Math.round(seconds / 60)} min`;
-  }
-
-  return "Session";
 }
 
 function getGradePalette(letter?: string) {
@@ -108,6 +95,21 @@ function getGradePalette(letter?: string) {
   };
 }
 
+function averageFromSessions(
+  sessions: SessionListItem[],
+  selector: (item: SessionListItem) => number | undefined
+) {
+  const values = sessions
+    .map((item) => selector(item))
+    .filter((value): value is number => typeof value === "number" && !Number.isNaN(value));
+
+  if (values.length === 0) {
+    return 0;
+  }
+
+  return Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
+}
+
 export default function HomeScreen() {
   const [username, setUsername] = useState("");
   const [sessionTitle, setSessionTitle] = useState("");
@@ -116,6 +118,7 @@ export default function HomeScreen() {
   const [starting, setStarting] = useState(false);
   const [loadingSessions, setLoadingSessions] = useState(false);
   const [savedSessions, setSavedSessions] = useState<SessionListItem[]>([]);
+  const [expandedSessions, setExpandedSessions] = useState<Record<string, boolean>>({});
   const [authChecked, setAuthChecked] = useState(false);
 
   const parsedKeyPoints = useMemo(() => {
@@ -147,6 +150,58 @@ export default function HomeScreen() {
     if (averageScore >= 63) return "D";
     if (averageScore >= 60) return "D-";
     return "F";
+  }, [savedSessions]);
+
+  const performanceMetrics = useMemo(() => {
+    const totalAttempts = savedSessions.reduce(
+      (sum, item) => sum + (item.attempt_count ?? item.attempts?.length ?? 0),
+      0
+    );
+    const averageScore = averageFromSessions(
+      savedSessions,
+      (item) =>
+        item.session_grade?.score ??
+        ((item as SessionListItem & { overall_score?: number }).overall_score)
+    );
+    const bestSession = savedSessions.reduce<SessionListItem | null>((best, item) => {
+      if (!best) return item;
+      const itemScore =
+        item.session_grade?.score ??
+        ((item as SessionListItem & { overall_score?: number }).overall_score ?? 0);
+      const bestScore =
+        best.session_grade?.score ??
+        ((best as SessionListItem & { overall_score?: number }).overall_score ?? 0);
+      return itemScore > bestScore
+        ? item
+        : best;
+    }, null);
+    const latestSession = savedSessions[0];
+
+    return {
+      totalAttempts,
+      averageScore,
+      bestTitle: bestSession?.title || "No sessions yet",
+      bestGrade: bestSession?.session_grade?.letter || "--",
+      latestPractice: latestSession?.created_at
+        ? formatDate(latestSession.created_at)
+        : "No recent practice",
+      speechAverage: averageFromSessions(
+        savedSessions,
+        (item) => item.session_grade?.breakdown?.speech ?? item.speech_summary?.overall_score
+      ),
+      contentAverage: averageFromSessions(
+        savedSessions,
+        (item) => item.session_grade?.breakdown?.content ?? item.content_summary?.overall_score
+      ),
+      bodyAverage: averageFromSessions(
+        savedSessions,
+        (item) => item.session_grade?.breakdown?.body ?? item.body_summary?.overall_score
+      ),
+      emotionAverage: averageFromSessions(
+        savedSessions,
+        (item) => item.session_grade?.breakdown?.emotion ?? item.emotion_summary?.overall_score
+      ),
+    };
   }, [savedSessions]);
 
   useEffect(() => {
@@ -242,7 +297,10 @@ export default function HomeScreen() {
         return;
       }
 
-      const report = await getSessionReport(item.session_id, user.username);
+      const report = await getSessionReport(
+        item.latest_attempt_id || item.session_id,
+        user.username
+      );
 
       router.push({
         pathname: "/summary",
@@ -256,6 +314,85 @@ export default function HomeScreen() {
         err?.response?.data?.detail || err?.message || "Could not open session report"
       );
     }
+  };
+
+  const handleOpenAttempt = async (attemptId: string) => {
+    try {
+      const user = readCoachUser();
+      if (!user?.username) {
+        router.replace("/login");
+        return;
+      }
+
+      const report = await getSessionReport(attemptId, user.username);
+
+      router.push({
+        pathname: "/summary",
+        params: {
+          data: JSON.stringify(report),
+        },
+      });
+    } catch (err: any) {
+      Alert.alert(
+        "Open Attempt Error",
+        err?.response?.data?.detail || err?.message || "Could not open attempt details"
+      );
+    }
+  };
+
+  const handleStartNewAttempt = async (item: SessionListItem) => {
+    try {
+      const user = readCoachUser();
+      if (!user?.username) {
+        router.replace("/login");
+        return;
+      }
+
+      setStarting(true);
+
+      const res = await startSession({
+        username: user.username,
+        title: item.title,
+        session_group_id: item.session_group_id || item.session_id,
+        expected_text: item.expected_text,
+        key_points: item.key_points,
+      });
+
+      const sessionId = String(res?.session_id || "");
+      if (!sessionId) {
+        throw new Error("No session ID returned from backend.");
+      }
+
+      persistCoachWebSession({
+        sessionId,
+        title: item.title,
+        expectedText: item.expected_text,
+        keyPoints: item.key_points,
+      });
+
+      router.push({
+        pathname: "/live-session",
+        params: {
+          sessionId,
+          expectedText: item.expected_text,
+          keyPoints: JSON.stringify(item.key_points || []),
+        },
+      });
+    } catch (err: any) {
+      Alert.alert(
+        "New Attempt Error",
+        err?.response?.data?.detail || err?.message || "Could not start a new attempt"
+      );
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  const toggleAttempts = (sessionId: string) => {
+    setExpandedSessions((prev) => ({
+      ...prev,
+      [sessionId]: !prev[sessionId],
+    }));
   };
 
   const handleDeleteSession = async (item: SessionListItem) => {
@@ -300,17 +437,17 @@ export default function HomeScreen() {
       >
         <View style={styles.header}>
           <View style={styles.brandRow}>
-            <View style={styles.brandIcon}>
-              <MaterialCommunityIcons name="microphone" size={22} color="#FFFFFF" />
-            </View>
-            <Text style={styles.brandText}>SpeakEZ</Text>
+            <TouchableOpacity onPress={() => router.replace("/")} activeOpacity={0.85}>
+              <Image
+                source={require("../assets/images/logo.png")}
+                style={styles.brandLogo}
+                resizeMode="contain"
+              />
+            </TouchableOpacity>
           </View>
 
           <View style={styles.headerActions}>
             <Text style={styles.usernameText}>{username}</Text>
-            <TouchableOpacity style={styles.secondaryHeaderButton}>
-              <Text style={styles.secondaryHeaderButtonText}>Help</Text>
-            </TouchableOpacity>
             <TouchableOpacity style={styles.primaryHeaderButton} onPress={handleLogout}>
               <Text style={styles.primaryHeaderButtonText}>Logout</Text>
             </TouchableOpacity>
@@ -410,6 +547,41 @@ export default function HomeScreen() {
 
           <View style={styles.panel}>
             <View style={styles.panelHeader}>
+              <View style={[styles.panelIconWrap, { backgroundColor: "#CFFAFE" }]}>
+                <MaterialCommunityIcons name="chart-line" size={24} color="#0F766E" />
+              </View>
+              <Text style={styles.panelTitle}>Performance Metrics</Text>
+            </View>
+
+            <View style={styles.metricsGrid}>
+              <View style={styles.metricCard}>
+                <Text style={styles.metricCardValue}>{performanceMetrics.averageScore}</Text>
+                <Text style={styles.metricCardLabel}>Average Score</Text>
+              </View>
+
+              <View style={styles.metricCard}>
+                <Text style={styles.metricCardValue}>{performanceMetrics.totalAttempts}</Text>
+                <Text style={styles.metricCardLabel}>Total Attempts</Text>
+              </View>
+            </View>
+
+            <View style={styles.metricSummaryCard}>
+              <Text style={styles.metricSummaryTitle}>Best Session</Text>
+              <Text style={styles.metricSummaryValue}>
+                {performanceMetrics.bestTitle} • {performanceMetrics.bestGrade}
+              </Text>
+            </View>
+
+            <View style={styles.metricSummaryCard}>
+              <Text style={styles.metricSummaryTitle}>Latest Practice</Text>
+              <Text style={styles.metricSummaryValue}>
+                {performanceMetrics.latestPractice}
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.panel}>
+            <View style={styles.panelHeader}>
               <View style={[styles.panelIconWrap, { backgroundColor: "#0891B2" }]}>
                 <MaterialCommunityIcons name="clock-outline" size={24} color="#FFFFFF" />
               </View>
@@ -426,13 +598,12 @@ export default function HomeScreen() {
                   const grade = item.session_grade?.letter || "--";
                   const score = item.session_grade?.score ?? 0;
                   const palette = getGradePalette(item.session_grade?.letter);
+                  const attempts = item.attempts || [];
+                  const attemptCount = item.attempt_count ?? attempts.length;
+                  const isExpanded = !!expandedSessions[item.session_id];
 
                   return (
-                    <Pressable
-                      key={item.session_id}
-                      style={styles.sessionCard}
-                      onPress={() => handleOpenOldSession(item)}
-                    >
+                    <View key={item.session_id} style={styles.sessionCard}>
                       <View style={styles.sessionTopRow}>
                         <View style={styles.sessionTitleBlock}>
                           <Text style={styles.sessionTitle}>
@@ -448,7 +619,9 @@ export default function HomeScreen() {
                               {formatDate(item.created_at)}
                             </Text>
                             <Text style={styles.sessionMetaDot}>•</Text>
-                            <Text style={styles.sessionMetaText}>{formatDuration(item)}</Text>
+                            <Text style={styles.sessionMetaText}>
+                              {attemptCount} {attemptCount === 1 ? "attempt" : "attempts"}
+                            </Text>
                           </View>
                         </View>
 
@@ -502,7 +675,67 @@ export default function HomeScreen() {
 
                         <Text style={styles.scoreText}>{score}/100</Text>
                       </View>
-                    </Pressable>
+
+                      <View style={styles.sessionActionsRow}>
+                        <TouchableOpacity
+                          style={styles.inlineActionButton}
+                          onPress={() => handleOpenOldSession(item)}
+                        >
+                          <Text style={styles.inlineActionButtonText}>Latest Details</Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                          style={[styles.inlineActionButton, starting && styles.buttonDisabled]}
+                          onPress={() => handleStartNewAttempt(item)}
+                          disabled={starting}
+                        >
+                          <Text style={styles.inlineActionButtonText}>New Attempt</Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                          style={styles.inlineActionButton}
+                          onPress={() => toggleAttempts(item.session_id)}
+                        >
+                          <Text style={styles.inlineActionButtonText}>
+                            {isExpanded ? "Hide Previous Attempts" : "Previous Attempts"}
+                          </Text>
+                        </TouchableOpacity>
+                      </View>
+
+                      {isExpanded ? (
+                        <View style={styles.attemptsDropdown}>
+                          {attempts.length === 0 ? (
+                            <Text style={styles.emptyAttemptsText}>
+                              No saved attempts for this session yet.
+                            </Text>
+                          ) : (
+                            attempts.map((attempt, index) => (
+                              <Pressable
+                                key={attempt.attempt_id}
+                                style={styles.attemptCard}
+                                onPress={() => handleOpenAttempt(attempt.attempt_id)}
+                              >
+                                <View style={styles.attemptHeaderRow}>
+                                  <Text style={styles.attemptTitle}>
+                                    Attempt {attemptCount - index}
+                                  </Text>
+                                  <Text style={styles.attemptScore}>
+                                    {attempt.session_grade?.letter || "--"} •{" "}
+                                    {attempt.session_grade?.score ?? attempt.overall_score ?? 0}/100
+                                  </Text>
+                                </View>
+                                <Text style={styles.attemptDate}>
+                                  {formatDate(attempt.created_at)}
+                                </Text>
+                                <Text style={styles.attemptPreview}>
+                                  {attempt.transcript_preview || "No transcript preview available."}
+                                </Text>
+                              </Pressable>
+                            ))
+                          )}
+                        </View>
+                      ) : null}
+                    </View>
                   );
                 })}
               </View>
@@ -511,41 +744,51 @@ export default function HomeScreen() {
         </View>
 
         <View style={styles.whySection}>
-          <Text style={styles.whyTitle}>Why SpeakEZ?</Text>
+          <View style={styles.whyHeader}>
+            <View style={[styles.panelIconWrap, { backgroundColor: "#DBEAFE" }]}>
+              <MaterialCommunityIcons
+                name="star-four-points-outline"
+                size={24}
+                color="#2563EB"
+              />
+            </View>
+            <View style={styles.whyHeaderCopy}>
+              <Text style={styles.panelTitle}>Why SpeakEZ</Text>
+              <Text style={styles.whySubtitle}>
+                A coaching experience built to help you practice with more clarity,
+                better feedback, and measurable momentum.
+              </Text>
+            </View>
+          </View>
 
           <View style={styles.featureGrid}>
             <View style={styles.featureItem}>
-              <View style={styles.featureIconWrap}>
-                <MaterialCommunityIcons name="trending-up" size={30} color="#FFFFFF" />
+              <View style={[styles.featureIconWrap, { backgroundColor: "#DBEAFE" }]}>
+                <MaterialCommunityIcons name="chart-line" size={24} color="#2563EB" />
               </View>
               <Text style={styles.featureTitle}>Instant Analysis</Text>
               <Text style={styles.featureText}>
-                Get real-time speech, vocal, and body language analysis as you
-                practice.
+                Real-time speech, vocal, and body-language analysis while you practice.
               </Text>
             </View>
 
             <View style={styles.featureItem}>
-              <View style={styles.featureIconWrap}>
-                <MaterialCommunityIcons name="target" size={30} color="#FFFFFF" />
+              <View style={[styles.featureIconWrap, { backgroundColor: "#E0F2FE" }]}>
+                <MaterialCommunityIcons name="target" size={24} color="#0891B2" />
               </View>
               <Text style={styles.featureTitle}>Personalized Feedback</Text>
               <Text style={styles.featureText}>
-                Receive suggestions tuned to your speaking patterns and goals.
+                Suggestions shaped around your speaking patterns, habits, and goals.
               </Text>
             </View>
 
             <View style={styles.featureItem}>
-              <View style={styles.featureIconWrap}>
-                <MaterialCommunityIcons
-                  name="star-four-points-outline"
-                  size={30}
-                  color="#FFFFFF"
-                />
+              <View style={[styles.featureIconWrap, { backgroundColor: "#DCFCE7" }]}>
+                <MaterialCommunityIcons name="history" size={24} color="#15803D" />
               </View>
-              <Text style={styles.featureTitle}>Track Progress</Text>
+              <Text style={styles.featureTitle}>Progress Over Time</Text>
               <Text style={styles.featureText}>
-                See improvement over time with saved sessions and grade trends.
+                Review sessions, compare attempts, and see your performance improve.
               </Text>
             </View>
           </View>
@@ -582,24 +825,15 @@ const styles = StyleSheet.create({
   brandRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
   },
-  brandIcon: {
-    width: 42,
-    height: 42,
-    borderRadius: 12,
-    backgroundColor: "#2563EB",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  brandText: {
-    fontSize: 28,
-    fontWeight: "800",
-    color: "#1D4ED8",
+  brandLogo: {
+    width: 240,
+    height: 84,
   },
   headerActions: {
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "center",
     gap: 10,
     flexWrap: "wrap",
   },
@@ -608,15 +842,6 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: "#475569",
     marginRight: 2,
-  },
-  secondaryHeaderButton: {
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: 8,
-  },
-  secondaryHeaderButtonText: {
-    color: "#475569",
-    fontWeight: "600",
   },
   primaryHeaderButton: {
     backgroundColor: "#2563EB",
@@ -651,6 +876,7 @@ const styles = StyleSheet.create({
     fontSize: 38,
     lineHeight: 44,
     fontWeight: "800",
+    fontFamily: "PTSerifBold",
     color: "#0F172A",
     textAlign: "center",
     marginBottom: 12,
@@ -737,7 +963,55 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 26,
     fontWeight: "800",
+    fontFamily: "PTSerifBold",
     color: "#0F172A",
+  },
+  metricsGrid: {
+    flexDirection: "row",
+    gap: 14,
+    marginBottom: 16,
+  },
+  metricCard: {
+    flex: 1,
+    backgroundColor: "#F8FAFC",
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    paddingVertical: 18,
+    paddingHorizontal: 16,
+    alignItems: "center",
+  },
+  metricCardValue: {
+    fontSize: 28,
+    fontWeight: "800",
+    fontFamily: "PTSerifBold",
+    color: "#0F172A",
+    marginBottom: 4,
+  },
+  metricCardLabel: {
+    fontSize: 13,
+    color: "#64748B",
+    textAlign: "center",
+  },
+  metricSummaryCard: {
+    backgroundColor: "#EFF6FF",
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    marginBottom: 10,
+  },
+  metricSummaryTitle: {
+    fontSize: 12,
+    color: "#64748B",
+    fontWeight: "700",
+    marginBottom: 4,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+  metricSummaryValue: {
+    fontSize: 15,
+    color: "#0F172A",
+    fontWeight: "700",
   },
   fieldBlock: {
     marginBottom: 16,
@@ -806,6 +1080,7 @@ const styles = StyleSheet.create({
   sessionTitle: {
     fontSize: 17,
     fontWeight: "700",
+    fontFamily: "PTSerifBold",
     color: "#0F172A",
     marginBottom: 6,
   },
@@ -830,6 +1105,68 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
+  },
+  sessionActionsRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+    marginTop: 16,
+  },
+  inlineActionButton: {
+    backgroundColor: "#EFF6FF",
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  inlineActionButtonText: {
+    color: "#1D4ED8",
+    fontWeight: "700",
+    fontSize: 13,
+  },
+  attemptsDropdown: {
+    marginTop: 14,
+    borderTopWidth: 1,
+    borderTopColor: "#E2E8F0",
+    paddingTop: 14,
+    gap: 10,
+  },
+  attemptCard: {
+    backgroundColor: "#F8FAFC",
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    padding: 14,
+  },
+  attemptHeaderRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 12,
+    marginBottom: 4,
+  },
+  attemptTitle: {
+    color: "#0F172A",
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  attemptScore: {
+    color: "#1D4ED8",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  attemptDate: {
+    color: "#64748B",
+    fontSize: 12,
+    marginBottom: 8,
+  },
+  attemptPreview: {
+    color: "#334155",
+    fontSize: 13,
+    lineHeight: 20,
+  },
+  emptyAttemptsText: {
+    color: "#64748B",
+    fontSize: 13,
   },
   gradeBadge: {
     minWidth: 54,
@@ -870,29 +1207,51 @@ const styles = StyleSheet.create({
     textAlign: "right",
   },
   whySection: {
-    backgroundColor: "#0EA5E9",
+    backgroundColor: "#FFFFFF",
     borderRadius: 24,
-    paddingVertical: 28,
+    paddingVertical: 22,
     paddingHorizontal: 22,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    shadowColor: "#0F172A",
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 4,
   },
-  whyTitle: {
-    fontSize: 30,
-    fontWeight: "800",
-    color: "#FFFFFF",
-    textAlign: "center",
-    marginBottom: 22,
+  whyHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 12,
+    marginBottom: 20,
+  },
+  whyHeaderCopy: {
+    flex: 1,
+  },
+  whySubtitle: {
+    fontSize: 15,
+    lineHeight: 23,
+    color: "#475569",
+    marginTop: 6,
   },
   featureGrid: {
-    gap: 22,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 16,
   },
   featureItem: {
-    alignItems: "center",
+    flex: 1,
+    minWidth: 220,
+    backgroundColor: "#F8FAFC",
+    borderRadius: 20,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
   },
   featureIconWrap: {
-    width: 64,
-    height: 64,
+    width: 52,
+    height: 52,
     borderRadius: 16,
-    backgroundColor: "rgba(255,255,255,0.2)",
     alignItems: "center",
     justifyContent: "center",
     marginBottom: 14,
@@ -900,14 +1259,13 @@ const styles = StyleSheet.create({
   featureTitle: {
     fontSize: 18,
     fontWeight: "700",
-    color: "#FFFFFF",
+    fontFamily: "PTSerifBold",
+    color: "#0F172A",
     marginBottom: 8,
-    textAlign: "center",
   },
   featureText: {
-    fontSize: 15,
-    lineHeight: 22,
-    color: "#E0F2FE",
-    textAlign: "center",
+    fontSize: 14,
+    lineHeight: 23,
+    color: "#475569",
   },
 });

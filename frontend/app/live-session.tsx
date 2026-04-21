@@ -11,6 +11,7 @@ import {
 } from "react-native";
 import { useLocalSearchParams, router } from "expo-router";
 import axios from "axios";
+import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { Audio } from "expo-av";
 
@@ -453,7 +454,11 @@ export default function LiveSessionScreen() {
           <View style={styles.statsRow}>
             <View style={styles.statCard}>
               <View style={[styles.statIconWrap, { backgroundColor: "#dbeafe" }]}>
-                <Text style={styles.statIcon}>🎤</Text>
+                <MaterialCommunityIcons
+                  name="microphone"
+                  size={24}
+                  color="#1D4ED8"
+                />
               </View>
               <Text style={styles.statValue}>{speechStatus}</Text>
               <Text style={styles.statLabel}>Speech Status</Text>
@@ -461,7 +466,11 @@ export default function LiveSessionScreen() {
 
             <View style={styles.statCard}>
               <View style={[styles.statIconWrap, { backgroundColor: "#cffafe" }]}>
-                <Text style={styles.statIcon}>🪪</Text>
+                <MaterialCommunityIcons
+                  name="identifier"
+                  size={24}
+                  color="#0F766E"
+                />
               </View>
               <Text style={styles.statValueSmall}>
                 {sessionId ? sessionId.slice(0, 8) : "--"}
@@ -482,7 +491,11 @@ export default function LiveSessionScreen() {
             <View style={styles.panel}>
               <View style={styles.panelHeader}>
                 <View style={[styles.panelIcon, { backgroundColor: "#dbeafe" }]}>
-                  <Text style={styles.panelIconText}>🎥</Text>
+                  <MaterialCommunityIcons
+                    name="video-outline"
+                    size={22}
+                    color="#1D4ED8"
+                  />
                 </View>
                 <Text style={styles.panelTitle}>Live Camera Feed</Text>
               </View>
@@ -496,7 +509,11 @@ export default function LiveSessionScreen() {
             <View style={styles.panel}>
               <View style={styles.panelHeader}>
                 <View style={[styles.panelIcon, { backgroundColor: "#e0f2fe" }]}>
-                  <Text style={styles.panelIconText}>💬</Text>
+                  <MaterialCommunityIcons
+                    name="message-processing-outline"
+                    size={22}
+                    color="#0891B2"
+                  />
                 </View>
                 <Text style={styles.panelTitle}>Live Coaching Tip</Text>
               </View>
@@ -509,7 +526,11 @@ export default function LiveSessionScreen() {
             <View style={styles.panel}>
               <View style={styles.panelHeader}>
                 <View style={[styles.panelIcon, { backgroundColor: "#cffafe" }]}>
-                  <Text style={styles.panelIconText}>📊</Text>
+                  <MaterialCommunityIcons
+                    name="chart-box-outline"
+                    size={22}
+                    color="#0891B2"
+                  />
                 </View>
                 <Text style={styles.panelTitle}>Live Status</Text>
               </View>
@@ -525,7 +546,11 @@ export default function LiveSessionScreen() {
             <View style={styles.panel}>
               <View style={styles.panelHeader}>
                 <View style={[styles.panelIcon, { backgroundColor: "#dbeafe" }]}>
-                  <Text style={styles.panelIconText}>🧠</Text>
+                  <MaterialCommunityIcons
+                    name="brain"
+                    size={22}
+                    color="#1D4ED8"
+                  />
                 </View>
                 <Text style={styles.panelTitle}>Transcript / Content Check</Text>
               </View>
@@ -578,18 +603,10 @@ const styles = StyleSheet.create({
   },
 
   navbar: {
-    backgroundColor: "rgba(255,255,255,0.88)",
-    borderRadius: 24,
-    paddingVertical: 10,
-    paddingHorizontal: 18,
+    backgroundColor: "transparent",
+    paddingVertical: 0,
+    paddingHorizontal: 0,
     marginBottom: 24,
-    borderWidth: 1,
-    borderColor: "#e5e7eb",
-    shadowColor: "#000",
-    shadowOpacity: 0.06,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 3,
   },
 
   hero: {
@@ -622,6 +639,7 @@ const styles = StyleSheet.create({
   heroTitle: {
     fontSize: 42,
     fontWeight: "800",
+    fontFamily: "PTSerifBold",
     color: "#111827",
     textAlign: "center",
     lineHeight: 48,
@@ -665,10 +683,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     marginBottom: 12,
-  },
-
-  statIcon: {
-    fontSize: 22,
   },
 
   statValue: {
@@ -742,15 +756,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-
-  panelIconText: {
-    fontSize: 19,
-    fontWeight: "700",
-  },
-
   panelTitle: {
     fontSize: 25,
     fontWeight: "800",
+    fontFamily: "PTSerifBold",
     color: "#111827",
   },
 

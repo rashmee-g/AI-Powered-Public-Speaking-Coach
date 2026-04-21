@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 import shutil
 import subprocess
@@ -42,12 +43,88 @@ def clamp_score(value: float) -> int:
     return max(0, min(100, int(round(value))))
 
 
+def score_to_letter(score: float) -> str:
+    if score >= 85:
+        return "A"
+    if score >= 80:
+        return "B+"
+    if score >= 75:
+        return "B"
+    if score >= 65:
+        return "C+"
+    if score >= 55:
+        return "C"
+    if score >= 40:
+        return "D"
+    return "F"
+
+
+def build_session_grade(
+    overall_score: float,
+    speech_score: float,
+    content_score: float,
+    body_score: float,
+    emotion_score: float,
+) -> dict[str, Any]:
+    score = clamp_score(overall_score)
+    return {
+        "score": score,
+        "letter": score_to_letter(score),
+        "breakdown": {
+            "speech": clamp_score(speech_score),
+            "content": clamp_score(content_score),
+            "body": clamp_score(body_score),
+            "emotion": clamp_score(emotion_score),
+        },
+        "summary": f"Average across all coaching categories: {score}/100.",
+    }
+
+
+def normalize_text(value: str | None) -> str:
+    return " ".join(str(value or "").strip().lower().split())
+
+
+def build_session_group_id(
+    title: str | None,
+    expected_text: str | None,
+    key_points: list[str] | None,
+) -> str:
+    normalized_payload = {
+        "title": normalize_text(title),
+        "expected_text": normalize_text(expected_text),
+        "key_points": sorted(
+            normalize_text(point) for point in (key_points or []) if normalize_text(point)
+        ),
+    }
+    raw = json.dumps(normalized_payload, sort_keys=True)
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, raw))
+
+
+def get_group_id_for_record(record: dict[str, Any]) -> str:
+    existing = str(record.get("session_group_id") or "").strip()
+    if existing:
+        return existing
+    return build_session_group_id(
+        record.get("title"),
+        record.get("expected_text"),
+        record.get("key_points", []),
+    )
+
+
+def transcript_preview(value: str | None, limit: int = 110) -> str:
+    cleaned = " ".join(str(value or "").split()).strip()
+    if len(cleaned) <= limit:
+        return cleaned
+    return f"{cleaned[: limit - 3].rstrip()}..."
+
+
 # -----------------------------
 # Request models
 # -----------------------------
 class StartSessionRequest(BaseModel):
     username: str
     title: str | None = None
+    session_group_id: str | None = None
     expected_text: str = ""
     key_points: list[str] = Field(default_factory=list)
 
@@ -505,9 +582,15 @@ def status():
 def start_session(payload: StartSessionRequest):
     session_id = str(uuid.uuid4())
     username = payload.username.strip().lower()
+    session_group_id = (
+        payload.session_group_id.strip()
+        if payload.session_group_id and payload.session_group_id.strip()
+        else build_session_group_id(payload.title, payload.expected_text, payload.key_points)
+    )
 
     SESSIONS[session_id] = {
         "session_id": session_id,
+        "session_group_id": session_group_id,
         "username": username,
         "title": payload.title,
         "created_at": time.time(),
@@ -525,6 +608,7 @@ def start_session(payload: StartSessionRequest):
 
     return {
         "session_id": session_id,
+        "session_group_id": session_group_id,
         "status": "started",
     }
 
@@ -533,14 +617,15 @@ def start_session(payload: StartSessionRequest):
 async def list_completed_sessions(username: str):
     normalized_username = username.strip().lower()
 
-    sessions = []
     cursor = sessions_collection.find(
         {"status": "completed", "username": normalized_username},
         {
             "_id": 0,
             "session_id": 1,
+            "session_group_id": 1,
             "username": 1,
             "created_at": 1,
+            "updated_at": 1,
             "title": 1,
             "expected_text": 1,
             "key_points": 1,
@@ -549,13 +634,93 @@ async def list_completed_sessions(username: str):
             "emotion_summary": 1,
             "body_summary": 1,
             "content_summary": 1,
+            "overall_score": 1,
+            "latest_transcript": 1,
+            "transcript": 1,
             "session_grade": 1,
         },
     ).sort("created_at", -1)
 
-    async for item in cursor:
-        sessions.append(item)
+    grouped_sessions: dict[str, dict[str, Any]] = {}
 
+    async for item in cursor:
+        group_id = get_group_id_for_record(item)
+        attempt_grade = item.get("session_grade") or build_session_grade(
+            item.get("overall_score", 0),
+            item.get("speech_summary", {}).get("overall_score", 0),
+            item.get("content_summary", {}).get("overall_score", 0),
+            item.get("body_summary", {}).get("overall_score", 0),
+            item.get("emotion_summary", {}).get("overall_score", 0),
+        )
+        attempt_summary = {
+            "attempt_id": item.get("session_id"),
+            "session_id": item.get("session_id"),
+            "created_at": item.get("created_at"),
+            "updated_at": item.get("updated_at"),
+            "transcript_preview": transcript_preview(
+                item.get("transcript") or item.get("latest_transcript")
+            ),
+            "latest_transcript": item.get("latest_transcript") or item.get("transcript") or "",
+            "overall_score": attempt_grade.get("score", 0),
+            "session_grade": attempt_grade,
+        }
+
+        if group_id not in grouped_sessions:
+            grouped_sessions[group_id] = {
+                "session_id": group_id,
+                "session_group_id": group_id,
+                "username": normalized_username,
+                "title": item.get("title"),
+                "created_at": item.get("created_at"),
+                "updated_at": item.get("updated_at"),
+                "expected_text": item.get("expected_text", ""),
+                "key_points": item.get("key_points", []),
+                "overall_feedback": item.get("overall_feedback", []),
+                "speech_summary": item.get("speech_summary", {}),
+                "emotion_summary": item.get("emotion_summary", {}),
+                "body_summary": item.get("body_summary", {}),
+                "content_summary": item.get("content_summary", {}),
+                "latest_attempt_id": item.get("session_id"),
+                "attempts": [],
+            }
+
+        group = grouped_sessions[group_id]
+        group["attempts"].append(attempt_summary)
+
+        if (item.get("created_at") or 0) >= (group.get("created_at") or 0):
+            group["title"] = item.get("title")
+            group["created_at"] = item.get("created_at")
+            group["updated_at"] = item.get("updated_at")
+            group["expected_text"] = item.get("expected_text", "")
+            group["key_points"] = item.get("key_points", [])
+            group["overall_feedback"] = item.get("overall_feedback", [])
+            group["speech_summary"] = item.get("speech_summary", {})
+            group["emotion_summary"] = item.get("emotion_summary", {})
+            group["body_summary"] = item.get("body_summary", {})
+            group["content_summary"] = item.get("content_summary", {})
+            group["latest_attempt_id"] = item.get("session_id")
+
+    sessions: list[dict[str, Any]] = []
+    for group in grouped_sessions.values():
+        group["attempts"] = sorted(
+            group["attempts"],
+            key=lambda attempt: attempt.get("created_at") or 0,
+            reverse=True,
+        )
+        attempt_scores = [
+            attempt.get("session_grade", {}).get("score", 0) for attempt in group["attempts"]
+        ]
+        average_score = sum(attempt_scores) / max(len(attempt_scores), 1)
+        group["attempt_count"] = len(group["attempts"])
+        group["overall_score"] = clamp_score(average_score)
+        group["session_grade"] = {
+            "score": clamp_score(average_score),
+            "letter": score_to_letter(average_score),
+            "summary": f"Average across {len(group['attempts'])} attempts.",
+        }
+        sessions.append(group)
+
+    sessions.sort(key=lambda item: item.get("created_at") or 0, reverse=True)
     return sessions
 
 
@@ -961,6 +1126,8 @@ async def end_session(payload: dict[str, str]):
 
     response = {
         "session_id": session_id,
+        "attempt_id": session_id,
+        "session_group_id": session.get("session_group_id"),
         "created_at": session.get("created_at"),
         "updated_at": time.time(),
         "status": "completed",
@@ -973,6 +1140,13 @@ async def end_session(payload: dict[str, str]):
         "emotion_summary": emotion_summary,
         "body_summary": body_summary,
         "content_summary": content_summary,
+        "session_grade": build_session_grade(
+            overall_score,
+            speech_summary.get("overall_score", 0),
+            content_summary.get("overall_score", 0) if content_summary else 0,
+            body_summary.get("overall_score", 0),
+            emotion_summary.get("overall_score", 0),
+        ),
         "latest_transcript": session.get("latest_transcript", ""),
         "transcript": full_transcript,
         "content_history": session.get("content_history", []),
@@ -1029,10 +1203,35 @@ async def login(payload: LoginRequest):
 async def delete_session(session_id: str, username: str):
     normalized_username = username.strip().lower()
 
-    result = await sessions_collection.delete_one({
-        "session_id": session_id,
-        "username": normalized_username,
+    result = await sessions_collection.delete_many({
+        "$or": [
+            {"session_id": session_id, "username": normalized_username},
+            {"session_group_id": session_id, "username": normalized_username},
+        ]
     })
+
+    if result.deleted_count == 0:
+        matching_attempt_ids: list[str] = []
+        cursor = sessions_collection.find(
+            {"status": "completed", "username": normalized_username},
+            {
+                "_id": 0,
+                "session_id": 1,
+                "session_group_id": 1,
+                "title": 1,
+                "expected_text": 1,
+                "key_points": 1,
+            },
+        )
+        async for item in cursor:
+            if get_group_id_for_record(item) == session_id:
+                matching_attempt_ids.append(str(item.get("session_id")))
+
+        if matching_attempt_ids:
+            result = await sessions_collection.delete_many({
+                "session_id": {"$in": matching_attempt_ids},
+                "username": normalized_username,
+            })
 
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Session not found.")

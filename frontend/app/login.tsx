@@ -140,11 +140,9 @@ const styles = StyleSheet.create({
 
   navbar: {
     height: 70,
-    backgroundColor: "#ffffff",
+    backgroundColor: "transparent",
     justifyContent: "center",
     alignItems: "center",
-    borderBottomWidth: 1,
-    borderBottomColor: "#e5e7eb",
     position: "absolute",
     top: 0,
     left: 0,
@@ -153,8 +151,8 @@ const styles = StyleSheet.create({
   },
 
   navLogo: {
-    width: 120,
-    height: 40,
+    width: 180,
+    height: 56,
   },
 
   body: {
@@ -176,8 +174,8 @@ const styles = StyleSheet.create({
   },
 
   heroLogo: {
-    width: 260,
-    height: 120,
+    width: 320,
+    height: 144,
     alignSelf: "flex-start",
     marginBottom: 20,
   },
@@ -185,6 +183,7 @@ const styles = StyleSheet.create({
   heroTitle: {
     fontSize: 52,
     fontWeight: "800",
+    fontFamily: "PTSerifBold",
     color: "#111827",
     lineHeight: 58,
     marginBottom: 16,
@@ -216,6 +215,7 @@ const styles = StyleSheet.create({
   formTitle: {
     fontSize: 24,
     fontWeight: "700",
+    fontFamily: "PTSerifBold",
     marginBottom: 10,
     color: "#111827",
   },

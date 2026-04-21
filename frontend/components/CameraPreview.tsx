@@ -31,6 +31,8 @@ const CameraPreview = forwardRef<CameraView, Props>(({ hasPermission }, ref) => 
   );
 });
 
+CameraPreview.displayName = "CameraPreview";
+
 export default CameraPreview;
 
 const styles = StyleSheet.create({

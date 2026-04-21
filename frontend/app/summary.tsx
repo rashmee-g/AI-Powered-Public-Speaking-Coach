@@ -10,6 +10,7 @@ import {
   Alert,
 } from "react-native";
 import { useLocalSearchParams } from "expo-router";
+import { Feather } from "@expo/vector-icons";
 import FeedbackCard from "../components/FeedbackCard";
 import AppHeader from "../components/AppHeader";
 import Ionicons from "@expo/vector-icons/Ionicons";
@@ -104,9 +105,7 @@ ${speechSummary?.next_step ?? "Keep practicing"}
   return (
     <SafeAreaView style={styles.safe}>
       <ScrollView contentContainerStyle={styles.container}>
-        <View style={styles.navbar}>
-          <AppHeader title="" />
-        </View>
+        <AppHeader title="" />
 
         <View style={styles.hero}>
           <View style={styles.heroTag}>
@@ -166,7 +165,7 @@ ${speechSummary?.next_step ?? "Keep practicing"}
             <View style={styles.panel}>
               <View style={styles.panelHeader}>
                 <View style={[styles.panelIcon, { backgroundColor: "#dbeafe" }]}>
-                  <Text style={styles.panelIconText}>🗣</Text>
+                <Feather name="message-circle" size={18} color="#1e3a8a" />
                 </View>
                 <Text style={styles.panelTitle}>Core Feedback</Text>
               </View>
@@ -205,7 +204,7 @@ ${speechSummary?.next_step ?? "Keep practicing"}
             <View style={styles.panel}>
               <View style={styles.panelHeader}>
                 <View style={[styles.panelIcon, { backgroundColor: "#dcfce7" }]}>
-                  <Text style={styles.panelIconText}>✅</Text>
+                  <Feather name="check-circle" size={18} color="#15803d" />
                 </View>
                 <Text style={styles.panelTitle}>What Went Well</Text>
               </View>
@@ -224,7 +223,7 @@ ${speechSummary?.next_step ?? "Keep practicing"}
             <View style={styles.panel}>
               <View style={styles.panelHeader}>
                 <View style={[styles.panelIcon, { backgroundColor: "#fee2e2" }]}>
-                  <Text style={styles.panelIconText}>📈</Text>
+                  <Feather name="trending-up" size={18} color="#b91c1c" />
                 </View>
                 <Text style={styles.panelTitle}>Areas to Improve</Text>
               </View>
@@ -247,7 +246,7 @@ ${speechSummary?.next_step ?? "Keep practicing"}
             <View style={styles.panel}>
               <View style={styles.panelHeader}>
                 <View style={[styles.panelIcon, { backgroundColor: "#cffafe" }]}>
-                  <Text style={styles.panelIconText}>📊</Text>
+                  <Feather name="bar-chart-2" size={18} color="#0f766e" />
                 </View>
                 <Text style={styles.panelTitle}>Speech Metrics</Text>
               </View>
@@ -291,7 +290,7 @@ ${speechSummary?.next_step ?? "Keep practicing"}
             <View style={styles.panel}>
               <View style={styles.panelHeader}>
                 <View style={[styles.panelIcon, { backgroundColor: "#ede9fe" }]}>
-                  <Text style={styles.panelIconText}>📝</Text>
+                  <Feather name="file-text" size={18} color="#6d28d9" />
                 </View>
                 <Text style={styles.panelTitle}>Overall Feedback</Text>
               </View>
@@ -310,7 +309,7 @@ ${speechSummary?.next_step ?? "Keep practicing"}
             <View style={styles.panel}>
               <View style={styles.panelHeader}>
                 <View style={[styles.panelIcon, { backgroundColor: "#fef3c7" }]}>
-                  <Text style={styles.panelIconText}>➡</Text>
+                  <Feather name="arrow-right" size={18} color="#92400e" />
                 </View>
                 <Text style={styles.panelTitle}>Next Step</Text>
               </View>
@@ -385,6 +384,7 @@ const styles = StyleSheet.create({
   heroTitle: {
     fontSize: 42,
     fontWeight: "800",
+    fontFamily: "PTSerifBold",
     color: "#111827",
     textAlign: "center",
     lineHeight: 48,
@@ -434,6 +434,7 @@ const styles = StyleSheet.create({
   gradeHeroScore: {
     fontSize: 24,
     fontWeight: "800",
+    fontFamily: "PTSerifBold",
     color: "#111827",
     marginBottom: 4,
   },
@@ -522,6 +523,7 @@ const styles = StyleSheet.create({
   panelTitle: {
     fontSize: 25,
     fontWeight: "800",
+    fontFamily: "PTSerifBold",
     color: "#111827",
   },
 

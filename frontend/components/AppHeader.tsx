@@ -1,4 +1,4 @@
-import { View, Text, TouchableOpacity, StyleSheet } from "react-native";
+import { View, Text, TouchableOpacity, StyleSheet, Image } from "react-native";
 import { router } from "expo-router";
 
 type Props = {
@@ -8,37 +8,34 @@ type Props = {
 export default function AppHeader({ title = "AI Coach" }: Props) {
   return (
     <View style={styles.container}>
-      <TouchableOpacity
-        style={styles.homeButton}
-        onPress={() => router.replace("/")}
-      >
-        <Text style={styles.homeText}>Home</Text>
+      <TouchableOpacity onPress={() => router.replace("/")} activeOpacity={0.85}>
+        <Image
+          source={require("../assets/images/logo.png")}
+          style={styles.logo}
+          resizeMode="contain"
+        />
       </TouchableOpacity>
 
-      <Text style={styles.title}>{title}</Text>
+      {title ? <Text style={styles.title}>{title}</Text> : null}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
-    marginBottom: 16,
+    marginBottom: 20,
+    alignItems: "center",
   },
-  homeButton: {
-    alignSelf: "flex-start",
-    backgroundColor: "#e5e7eb",
-    paddingVertical: 8,
-    paddingHorizontal: 14,
-    borderRadius: 12,
-    marginBottom: 10,
-  },
-  homeText: {
-    fontWeight: "700",
-    color: "#111827",
+  logo: {
+    width: 220,
+    height: 72,
+    marginBottom: 8,
   },
   title: {
     fontSize: 24,
     fontWeight: "800",
+    fontFamily: "PTSerifBold",
     color: "#111827",
+    textAlign: "center",
   },
 });
