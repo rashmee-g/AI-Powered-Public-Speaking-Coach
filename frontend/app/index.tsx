@@ -1,6 +1,7 @@
-import React, { useEffect, useMemo, useState, useCallback } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Alert,
+  Pressable,
   SafeAreaView,
   ScrollView,
   StyleSheet,
@@ -9,30 +10,107 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { router, useFocusEffect , Redirect} from "expo-router";
+import { MaterialCommunityIcons } from "@expo/vector-icons";
+import { Redirect, router, useFocusEffect } from "expo-router";
 
 import {
-  persistCoachWebSession,
-  startSession,
-  getCompletedSessions,
-  getSessionReport,
-  readCoachUser,
   clearCoachUser,
   deleteSession,
+  getCompletedSessions,
+  getSessionReport,
+  persistCoachWebSession,
+  readCoachUser,
+  startSession,
   type SessionListItem,
 } from "../services/api";
 
 function formatDate(timestamp?: number) {
   if (!timestamp) return "Unknown date";
+
   try {
-    return new Date(timestamp * 1000).toLocaleString();
+    return new Date(timestamp * 1000).toLocaleString([], {
+      month: "numeric",
+      day: "numeric",
+      year: "2-digit",
+      hour: "numeric",
+      minute: "2-digit",
+    });
   } catch {
     return String(timestamp);
   }
 }
 
+function formatDuration(item: SessionListItem) {
+  if (item.speech_summary?.duration_label) {
+    return String(item.speech_summary.duration_label);
+  }
+
+  if (typeof item.speech_summary?.duration_seconds === "number") {
+    const seconds = item.speech_summary.duration_seconds;
+    if (seconds < 60) return `${seconds}s`;
+    return `${Math.round(seconds / 60)} min`;
+  }
+
+  return "Session";
+}
+
+function getGradePalette(letter?: string) {
+  if (!letter) {
+    return {
+      badge: "#E5E7EB",
+      badgeText: "#4B5563",
+      progressStart: "#60A5FA",
+      progressEnd: "#22D3EE",
+    };
+  }
+
+  if (letter.startsWith("A")) {
+    return {
+      badge: "#DCFCE7",
+      badgeText: "#15803D",
+      progressStart: "#22C55E",
+      progressEnd: "#16A34A",
+    };
+  }
+
+  if (letter.startsWith("B")) {
+    return {
+      badge: "#DBEAFE",
+      badgeText: "#2563EB",
+      progressStart: "#3B82F6",
+      progressEnd: "#06B6D4",
+    };
+  }
+
+  if (letter.startsWith("C")) {
+    return {
+      badge: "#FEF3C7",
+      badgeText: "#B45309",
+      progressStart: "#F59E0B",
+      progressEnd: "#EAB308",
+    };
+  }
+
+  if (letter.startsWith("D")) {
+    return {
+      badge: "#FED7AA",
+      badgeText: "#C2410C",
+      progressStart: "#F97316",
+      progressEnd: "#FB923C",
+    };
+  }
+
+  return {
+    badge: "#FEE2E2",
+    badgeText: "#DC2626",
+    progressStart: "#EF4444",
+    progressEnd: "#F97316",
+  };
+}
+
 export default function HomeScreen() {
   const [username, setUsername] = useState("");
+  const [sessionTitle, setSessionTitle] = useState("");
   const [expectedText, setExpectedText] = useState("");
   const [keyPointsText, setKeyPointsText] = useState("");
   const [starting, setStarting] = useState(false);
@@ -47,13 +125,37 @@ export default function HomeScreen() {
       .filter(Boolean);
   }, [keyPointsText]);
 
+  const averageGrade = useMemo(() => {
+    const gradedSessions = savedSessions.filter((item) => item.session_grade?.letter);
+    if (gradedSessions.length === 0) return "--";
+
+    const totalScore = gradedSessions.reduce(
+      (sum, item) => sum + (item.session_grade?.score ?? 0),
+      0
+    );
+    const averageScore = totalScore / gradedSessions.length;
+
+    if (averageScore >= 93) return "A";
+    if (averageScore >= 90) return "A-";
+    if (averageScore >= 87) return "B+";
+    if (averageScore >= 83) return "B";
+    if (averageScore >= 80) return "B-";
+    if (averageScore >= 77) return "C+";
+    if (averageScore >= 73) return "C";
+    if (averageScore >= 70) return "C-";
+    if (averageScore >= 67) return "D+";
+    if (averageScore >= 63) return "D";
+    if (averageScore >= 60) return "D-";
+    return "F";
+  }, [savedSessions]);
+
   useEffect(() => {
     const user = readCoachUser();
-  
+
     if (user?.username) {
       setUsername(user.username);
     }
-  
+
     setAuthChecked(true);
   }, []);
 
@@ -98,6 +200,7 @@ export default function HomeScreen() {
 
       const res = await startSession({
         username: user.username,
+        title: sessionTitle,
         expected_text: expectedText.trim(),
         key_points: parsedKeyPoints,
       });
@@ -155,19 +258,6 @@ export default function HomeScreen() {
     }
   };
 
-  const handleLogout = () => {
-    clearCoachUser();
-    router.replace("/login");
-  };
-
-  if (!authChecked) {
-    return null;
-  }
-  
-  if (!username) {
-    return <Redirect href="/login" />;
-  }
-
   const handleDeleteSession = async (item: SessionListItem) => {
     try {
       const user = readCoachUser();
@@ -175,9 +265,9 @@ export default function HomeScreen() {
         router.replace("/login");
         return;
       }
-  
+
       await deleteSession(item.session_id, user.username);
-  
+
       setSavedSessions((prev) =>
         prev.filter((session) => session.session_id !== item.session_id)
       );
@@ -189,151 +279,276 @@ export default function HomeScreen() {
     }
   };
 
+  const handleLogout = () => {
+    clearCoachUser();
+    router.replace("/login");
+  };
+
+  if (!authChecked) {
+    return null;
+  }
+
+  if (!username) {
+    return <Redirect href="/login" />;
+  }
+
   return (
     <SafeAreaView style={styles.safe}>
-      <ScrollView contentContainerStyle={styles.container}>
-        <View style={styles.heroCard}>
-          <Text style={styles.title}>SpeakEZ</Text>
-          <Text style={styles.subtitle}>
-            Practice your speech with live multimodal feedback on delivery,
-            body language, emotion, and content alignment.
+      <ScrollView
+        contentContainerStyle={styles.container}
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.header}>
+          <View style={styles.brandRow}>
+            <View style={styles.brandIcon}>
+              <MaterialCommunityIcons name="microphone" size={22} color="#FFFFFF" />
+            </View>
+            <Text style={styles.brandText}>SpeakEZ</Text>
+          </View>
+
+          <View style={styles.headerActions}>
+            <Text style={styles.usernameText}>{username}</Text>
+            <TouchableOpacity style={styles.secondaryHeaderButton}>
+              <Text style={styles.secondaryHeaderButtonText}>Help</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.primaryHeaderButton} onPress={handleLogout}>
+              <Text style={styles.primaryHeaderButtonText}>Logout</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        <View style={styles.heroSection}>
+          <View style={styles.badge}>
+            <MaterialCommunityIcons
+              name="star-four-points-outline"
+              size={16}
+              color="#2563EB"
+            />
+            <Text style={styles.badgeText}>AI-Powered Speech Coaching</Text>
+          </View>
+
+          <Text style={styles.heroTitle}>Practice Smarter. Speak Better.</Text>
+          <Text style={styles.heroSubtitle}>
+            Get real-time feedback on delivery, body language, emotion, and
+            content with your speaking coach.
           </Text>
-          {username ? <Text style={styles.userText}>Signed in as: {username}</Text> : null}
-        </View>
 
-        <TouchableOpacity style={styles.smallDeleteBtn} onPress={handleLogout}>
-          <Text style={styles.smallDeleteBtnText}>Logout</Text>
-        </TouchableOpacity>
+          <View style={styles.statsGrid}>
+            <View style={styles.statCard}>
+              <View style={[styles.statIconWrap, { backgroundColor: "#DBEAFE" }]}>
+                <MaterialCommunityIcons name="chart-box" size={24} color="#2563EB" />
+              </View>
+              <Text style={styles.statValue}>{savedSessions.length}</Text>
+              <Text style={styles.statLabel}>Total Sessions</Text>
+            </View>
 
-        <View style={styles.card}>
-          <Text style={styles.sectionTitle}>Start a New Practice Session</Text>
-
-          <Text style={styles.label}>Planned Speech / Expected Content</Text>
-          <TextInput
-            style={[styles.input, styles.largeInput]}
-            placeholder="Paste your speech outline or the text you want to be checked against..."
-            value={expectedText}
-            onChangeText={setExpectedText}
-            multiline
-          />
-
-          <Text style={styles.label}>Key Points</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="Enter comma-separated key points, e.g. confidence, posture, eye contact"
-            value={keyPointsText}
-            onChangeText={setKeyPointsText}
-          />
-
-          <TouchableOpacity
-            style={[styles.primaryBtn, starting && { opacity: 0.7 }]}
-            onPress={handleStartSession}
-            disabled={starting}
-          >
-            <Text style={styles.primaryBtnText}>
-              {starting ? "Starting..." : "Start Practice Session"}
-            </Text>
-          </TouchableOpacity>
-        </View>
-
-        <View style={styles.card}>
-          <Text style={styles.sectionTitle}>Why This Program Is Useful</Text>
-
-          <View style={styles.bulletBlock}>
-            <Text style={styles.bulletTitle}>Real-time delivery coaching</Text>
-            <Text style={styles.bulletText}>
-              The program gives live feedback while you speak, so you can catch
-              issues with pace, pauses, vocal variety, and volume in the moment.
-            </Text>
-          </View>
-
-          <View style={styles.bulletBlock}>
-            <Text style={styles.bulletTitle}>Multimodal speaking analysis</Text>
-            <Text style={styles.bulletText}>
-              It does more than just speech analysis. It also looks at body
-              language and facial expression, which makes the practice feel more
-              like real coaching.
-            </Text>
-          </View>
-
-          <View style={styles.bulletBlock}>
-            <Text style={styles.bulletTitle}>Content checking against your plan</Text>
-            <Text style={styles.bulletText}>
-              You can compare what you actually said against your expected
-              speech and key points, which helps you stay organized and on topic.
-            </Text>
-          </View>
-
-          <View style={styles.bulletBlock}>
-            <Text style={styles.bulletTitle}>Helpful for repeated practice</Text>
-            <Text style={styles.bulletText}>
-              Sessions and summary reports are stored in the database, making it
-              easier to review past performance and track improvement over time.
-            </Text>
+            <View style={styles.statCard}>
+              <View style={[styles.statIconWrap, { backgroundColor: "#CFFAFE" }]}>
+                <MaterialCommunityIcons name="trophy-outline" size={24} color="#0891B2" />
+              </View>
+              <Text style={styles.statValue}>{averageGrade}</Text>
+              <Text style={styles.statLabel}>Average Grade</Text>
+            </View>
           </View>
         </View>
 
-        <View style={styles.card}>
-          <Text style={styles.sectionTitle}>Previous Sessions</Text>
+        <View style={styles.mainGrid}>
+          <View style={styles.panel}>
+            <View style={styles.panelHeader}>
+              <View style={[styles.panelIconWrap, { backgroundColor: "#2563EB" }]}>
+                <MaterialCommunityIcons name="play" size={24} color="#FFFFFF" />
+              </View>
+              <Text style={styles.panelTitle}>Start a New Session</Text>
+            </View>
 
-          {loadingSessions ? (
-            <Text style={styles.emptyText}>Loading saved session reports...</Text>
-          ) : savedSessions.length === 0 ? (
-            <Text style={styles.emptyText}>
-              No completed sessions yet. Finish a session to see reports here.
-            </Text>
-          ) : (
-            savedSessions.map((item) => (
-              <View key={item.session_id} style={styles.sessionRow}>
-                <View style={styles.sessionLeft}>
-                  <Text style={styles.sessionIdText}>{item.session_id}</Text>
-            
-                  <Text style={styles.sessionMeta}>
-                    {formatDate(item.created_at)}
-                  </Text>
-          
-                  <Text style={styles.sessionPreview} numberOfLines={2}>
-                    {item.overall_feedback?.[0] ||
-                      item.expected_text ||
-                      "Open summary report"}
-                  </Text>
+            <View style={styles.fieldBlock}>
+              <Text style={styles.fieldLabel}>Session Title</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="Give your session a name..."
+                placeholderTextColor="#94A3B8"
+                value={sessionTitle}
+                onChangeText={setSessionTitle}
+              />
+            </View>
 
-                  <View style={styles.buttonRow}>
-                    <TouchableOpacity
-                      style={styles.primaryBtnSmall}
+            <View style={styles.fieldBlock}>
+              <Text style={styles.fieldLabel}>Speech / expected content...</Text>
+              <TextInput
+                style={[styles.input, styles.textarea]}
+                placeholder="Paste or type your speech content here..."
+                placeholderTextColor="#94A3B8"
+                value={expectedText}
+                onChangeText={setExpectedText}
+                multiline
+                textAlignVertical="top"
+              />
+            </View>
+
+            <View style={styles.fieldBlock}>
+              <Text style={styles.fieldLabel}>Key points (comma separated)</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="e.g., confidence, clarity, pacing..."
+                placeholderTextColor="#94A3B8"
+                value={keyPointsText}
+                onChangeText={setKeyPointsText}
+              />
+            </View>
+
+            <TouchableOpacity
+              style={[styles.startButton, starting && styles.buttonDisabled]}
+              onPress={handleStartSession}
+              disabled={starting}
+            >
+              <MaterialCommunityIcons name="play" size={20} color="#FFFFFF" />
+              <Text style={styles.startButtonText}>
+                {starting ? "Starting..." : "Start Session"}
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.panel}>
+            <View style={styles.panelHeader}>
+              <View style={[styles.panelIconWrap, { backgroundColor: "#0891B2" }]}>
+                <MaterialCommunityIcons name="clock-outline" size={24} color="#FFFFFF" />
+              </View>
+              <Text style={styles.panelTitle}>Previous Sessions</Text>
+            </View>
+
+            {loadingSessions ? (
+              <Text style={styles.emptyState}>Loading...</Text>
+            ) : savedSessions.length === 0 ? (
+              <Text style={styles.emptyState}>No sessions yet.</Text>
+            ) : (
+              <View style={styles.sessionsList}>
+                {savedSessions.map((item) => {
+                  const grade = item.session_grade?.letter || "--";
+                  const score = item.session_grade?.score ?? 0;
+                  const palette = getGradePalette(item.session_grade?.letter);
+
+                  return (
+                    <Pressable
+                      key={item.session_id}
+                      style={styles.sessionCard}
                       onPress={() => handleOpenOldSession(item)}
                     >
-                      <Text style={styles.primaryTextSmall}>Open Report</Text>
-                    </TouchableOpacity>
+                      <View style={styles.sessionTopRow}>
+                        <View style={styles.sessionTitleBlock}>
+                          <Text style={styles.sessionTitle}>
+                            {item.title || "Untitled Session"}
+                          </Text>
+                          <View style={styles.sessionMetaRow}>
+                            <MaterialCommunityIcons
+                              name="calendar-month-outline"
+                              size={14}
+                              color="#64748B"
+                            />
+                            <Text style={styles.sessionMetaText}>
+                              {formatDate(item.created_at)}
+                            </Text>
+                            <Text style={styles.sessionMetaDot}>•</Text>
+                            <Text style={styles.sessionMetaText}>{formatDuration(item)}</Text>
+                          </View>
+                        </View>
 
-                    <TouchableOpacity
-                      style={styles.deleteBtnSmall}
-                      onPress={() => handleDeleteSession(item)}
-                    >
-                      <Text style={styles.deleteTextSmall}>Delete</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-            
-                {item.session_grade ? (
-                  <View style={styles.gradeCard}>
-                    <Text style={styles.gradeLetter}>
-                      {item.session_grade.letter}
-                    </Text>
-            
-                    <View style={styles.gradeDivider} />
-            
-                    <View style={styles.gradeRight}>
-                      <Text style={styles.gradeScore}>
-                        {item.session_grade.score}/100
-                      </Text>
-                      <Text style={styles.gradeLabel}>Session Grade</Text>
-                    </View>
-                  </View>
-                ) : null}
+                        <TouchableOpacity
+                          style={styles.deleteButton}
+                          onPress={() => handleDeleteSession(item)}
+                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                        >
+                          <MaterialCommunityIcons
+                            name="trash-can-outline"
+                            size={18}
+                            color="#EF4444"
+                          />
+                        </TouchableOpacity>
+                      </View>
+
+                      <View style={styles.sessionBottomRow}>
+                        <View
+                          style={[
+                            styles.gradeBadge,
+                            { backgroundColor: palette.badge },
+                          ]}
+                        >
+                          <Text
+                            style={[
+                              styles.gradeBadgeText,
+                              { color: palette.badgeText },
+                            ]}
+                          >
+                            {grade}
+                          </Text>
+                        </View>
+
+                        <View style={styles.progressTrack}>
+                          <View
+                            style={[
+                              styles.progressFill,
+                              {
+                                width: `${Math.max(0, Math.min(score, 100))}%`,
+                                backgroundColor: palette.progressStart,
+                              },
+                            ]}
+                          />
+                          <View
+                            style={[
+                              styles.progressAccent,
+                              { backgroundColor: palette.progressEnd },
+                            ]}
+                          />
+                        </View>
+
+                        <Text style={styles.scoreText}>{score}/100</Text>
+                      </View>
+                    </Pressable>
+                  );
+                })}
               </View>
-            ))
-          )}
+            )}
+          </View>
+        </View>
+
+        <View style={styles.whySection}>
+          <Text style={styles.whyTitle}>Why SpeakEZ?</Text>
+
+          <View style={styles.featureGrid}>
+            <View style={styles.featureItem}>
+              <View style={styles.featureIconWrap}>
+                <MaterialCommunityIcons name="trending-up" size={30} color="#FFFFFF" />
+              </View>
+              <Text style={styles.featureTitle}>Instant Analysis</Text>
+              <Text style={styles.featureText}>
+                Get real-time speech, vocal, and body language analysis as you
+                practice.
+              </Text>
+            </View>
+
+            <View style={styles.featureItem}>
+              <View style={styles.featureIconWrap}>
+                <MaterialCommunityIcons name="target" size={30} color="#FFFFFF" />
+              </View>
+              <Text style={styles.featureTitle}>Personalized Feedback</Text>
+              <Text style={styles.featureText}>
+                Receive suggestions tuned to your speaking patterns and goals.
+              </Text>
+            </View>
+
+            <View style={styles.featureItem}>
+              <View style={styles.featureIconWrap}>
+                <MaterialCommunityIcons
+                  name="star-four-points-outline"
+                  size={30}
+                  color="#FFFFFF"
+                />
+              </View>
+              <Text style={styles.featureTitle}>Track Progress</Text>
+              <Text style={styles.featureText}>
+                See improvement over time with saved sessions and grade trends.
+              </Text>
+            </View>
+          </View>
         </View>
       </ScrollView>
     </SafeAreaView>
@@ -343,264 +558,356 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   safe: {
     flex: 1,
-    backgroundColor: "#f6f7fb",
+    backgroundColor: "#EFF6FF",
   },
   container: {
-    padding: 20,
-    paddingBottom: 50,
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    paddingBottom: 40,
   },
-  heroCard: {
-    backgroundColor: "#ffffff",
-    borderRadius: 24,
-    padding: 22,
-    marginBottom: 16,
-    shadowColor: "#000",
-    shadowOpacity: 0.08,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 3,
-  },
-  title: {
-    fontSize: 30,
-    fontWeight: "800",
-    color: "#111827",
-    marginBottom: 8,
-  },
-  subtitle: {
-    fontSize: 15,
-    lineHeight: 22,
-    color: "#4b5563",
-  },
-  userText: {
-    marginTop: 8,
-    fontSize: 14,
-    color: "#374151",
-    fontWeight: "600",
-  },
-  card: {
-    backgroundColor: "#ffffff",
+  header: {
+    backgroundColor: "rgba(255,255,255,0.92)",
     borderRadius: 20,
-    padding: 18,
-    marginBottom: 16,
-    shadowColor: "#000",
-    shadowOpacity: 0.08,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 3,
-  },
-  sectionTitle: {
-    fontSize: 20,
-    fontWeight: "700",
-    color: "#111827",
-    marginBottom: 14,
-  },
-  label: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: "#374151",
-    marginBottom: 8,
-    marginTop: 4,
-  },
-  input: {
-    backgroundColor: "#f3f4f6",
-    borderRadius: 14,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 15,
-    marginBottom: 12,
-  },
-  largeInput: {
-    minHeight: 140,
-    textAlignVertical: "top",
-  },
-  primaryBtn: {
-    backgroundColor: "#2563eb",
-    borderRadius: 14,
-    paddingVertical: 14,
-    alignItems: "center",
-    marginTop: 6,
-  },
-  primaryBtnText: {
-    color: "#ffffff",
-    fontWeight: "700",
-    fontSize: 16,
-  },
-  bulletBlock: {
-    marginBottom: 14,
-  },
-  bulletTitle: {
-    fontSize: 15,
-    fontWeight: "700",
-    color: "#111827",
-    marginBottom: 4,
-  },
-  bulletText: {
-    fontSize: 14,
-    lineHeight: 21,
-    color: "#4b5563",
-  },
-  emptyText: {
-    fontSize: 14,
-    color: "#6b7280",
-  },
-  sessionRow: {
-    backgroundColor: "#f9fafb",
-    borderRadius: 20,
-    padding: 20,
-    marginBottom: 16,
+    paddingHorizontal: 18,
+    paddingVertical: 16,
+    marginBottom: 24,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    gap: 20,
+    flexWrap: "wrap",
+    gap: 12,
   },
-  
-  sessionLeft: {
-    flex: 1,
+  brandRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
   },
-  
-  sessionIdText: {
-    fontSize: 18,
+  brandIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 12,
+    backgroundColor: "#2563EB",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  brandText: {
+    fontSize: 28,
     fontWeight: "800",
-    color: "#111827",
-    marginBottom: 8,
+    color: "#1D4ED8",
   },
-  
-  sessionMeta: {
+  headerActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    flexWrap: "wrap",
+  },
+  usernameText: {
     fontSize: 14,
-    color: "#6b7280",
-    marginBottom: 10,
+    fontWeight: "700",
+    color: "#475569",
+    marginRight: 2,
   },
-  
-  sessionPreview: {
-    fontSize: 16,
-    lineHeight: 24,
-    color: "#374151",
+  secondaryHeaderButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 8,
+  },
+  secondaryHeaderButtonText: {
+    color: "#475569",
+    fontWeight: "600",
+  },
+  primaryHeaderButton: {
+    backgroundColor: "#2563EB",
+    borderRadius: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  primaryHeaderButtonText: {
+    color: "#FFFFFF",
+    fontWeight: "700",
+  },
+  heroSection: {
+    alignItems: "center",
+    marginBottom: 28,
+  },
+  badge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "#DBEAFE",
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 999,
     marginBottom: 18,
   },
-  
-  smallPrimaryBtn: {
-    backgroundColor: "#2563eb",
-    borderRadius: 18,
-    paddingVertical: 14,
-    paddingHorizontal: 26,
-    alignItems: "center",
-    alignSelf: "flex-start",
+  badgeText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#1D4ED8",
   },
-  
-  smallPrimaryBtnText: {
-    color: "#ffffff",
+  heroTitle: {
+    fontSize: 38,
+    lineHeight: 44,
+    fontWeight: "800",
+    color: "#0F172A",
+    textAlign: "center",
+    marginBottom: 12,
+    maxWidth: 640,
+  },
+  heroSubtitle: {
+    fontSize: 17,
+    lineHeight: 26,
+    color: "#475569",
+    textAlign: "center",
+    maxWidth: 640,
+    marginBottom: 24,
+  },
+  statsGrid: {
+    width: "100%",
+    maxWidth: 420,
+    flexDirection: "row",
+    gap: 16,
+  },
+  statCard: {
+    flex: 1,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 20,
+    paddingVertical: 22,
+    paddingHorizontal: 18,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    shadowColor: "#0F172A",
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 4,
+  },
+  statIconWrap: {
+    width: 48,
+    height: 48,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 12,
+  },
+  statValue: {
+    fontSize: 32,
+    fontWeight: "800",
+    color: "#0F172A",
+    marginBottom: 4,
+  },
+  statLabel: {
+    fontSize: 14,
+    color: "#64748B",
+    textAlign: "center",
+  },
+  mainGrid: {
+    gap: 18,
+    marginBottom: 28,
+  },
+  panel: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 24,
+    padding: 22,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    shadowColor: "#0F172A",
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 4,
+  },
+  panelHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    marginBottom: 20,
+  },
+  panelIconWrap: {
+    width: 48,
+    height: 48,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  panelTitle: {
+    flex: 1,
+    fontSize: 26,
+    fontWeight: "800",
+    color: "#0F172A",
+  },
+  fieldBlock: {
+    marginBottom: 16,
+  },
+  fieldLabel: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#334155",
+    marginBottom: 8,
+  },
+  input: {
+    borderWidth: 1,
+    borderColor: "#CBD5E1",
+    borderRadius: 14,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    fontSize: 15,
+    color: "#0F172A",
+    backgroundColor: "#FFFFFF",
+  },
+  textarea: {
+    minHeight: 120,
+  },
+  startButton: {
+    backgroundColor: "#2563EB",
+    borderRadius: 14,
+    paddingVertical: 16,
+    justifyContent: "center",
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 6,
+  },
+  buttonDisabled: {
+    opacity: 0.7,
+  },
+  startButtonText: {
+    color: "#FFFFFF",
     fontWeight: "700",
     fontSize: 16,
   },
-  
-  gradeCard: {
-    minWidth: 250,
-    backgroundColor: "#eef2ff",
-    borderRadius: 22,
-    paddingVertical: 26,
-    paddingHorizontal: 26,
+  emptyState: {
+    fontSize: 15,
+    color: "#64748B",
+  },
+  sessionsList: {
+    gap: 14,
+  },
+  sessionCard: {
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    borderRadius: 18,
+    padding: 18,
+    backgroundColor: "#FFFFFF",
+  },
+  sessionTopRow: {
     flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 12,
+    marginBottom: 14,
   },
-  
-  gradeLetter: {
-    fontSize: 56,
-    fontWeight: "800",
-    color: "#2563eb",
-    marginRight: 20,
+  sessionTitleBlock: {
+    flex: 1,
   },
-  
-  gradeDivider: {
-    width: 1,
-    alignSelf: "stretch",
-    backgroundColor: "#93c5fd",
-    marginRight: 20,
-  },
-  
-  gradeRight: {
-    justifyContent: "center",
-  },
-  
-  gradeScore: {
-    fontSize: 24,
-    fontWeight: "800",
-    color: "#111827",
+  sessionTitle: {
+    fontSize: 17,
+    fontWeight: "700",
+    color: "#0F172A",
     marginBottom: 6,
   },
-  
-  gradeLabel: {
-    fontSize: 15,
-    color: "#6b7280",
-    fontWeight: "500",
-  },
-
-  buttonRow: {
+  sessionMetaRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10, // spacing between buttons
-    marginTop: 10,
+    flexWrap: "wrap",
+    gap: 6,
   },
-  
-  primaryBtnSmall: {
-    backgroundColor: "#2563eb",
-    borderRadius: 14,
-    paddingVertical: 10,
-    paddingHorizontal: 16,
+  sessionMetaText: {
+    fontSize: 13,
+    color: "#64748B",
   },
-  
-  primaryTextSmall: {
-    color: "#fff",
-    fontWeight: "600",
-    fontSize: 14,
+  sessionMetaDot: {
+    color: "#94A3B8",
   },
-  
-  deleteBtnSmall: {
-    backgroundColor: "#fee2e2",
-    borderRadius: 14,
-    paddingVertical: 10,
-    paddingHorizontal: 16,
+  deleteButton: {
+    padding: 6,
+    borderRadius: 8,
   },
-  
-  deleteTextSmall: {
-    color: "#b91c1c",
-    fontWeight: "600",
-    fontSize: 14,
-  },
-
-  smallDeleteBtn: {
-    backgroundColor: "#e5e7eb",
-    borderRadius: 12,
-    paddingVertical: 10,
-    paddingHorizontal: 16,
+  sessionBottomRow: {
+    flexDirection: "row",
     alignItems: "center",
-    marginBottom: 16,
-    alignSelf: "flex-start",
+    gap: 10,
   },
-  
-  smallDeleteBtnText: {
-    color: "#111827",
+  gradeBadge: {
+    minWidth: 54,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 10,
+    alignItems: "center",
+  },
+  gradeBadgeText: {
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  progressTrack: {
+    flex: 1,
+    height: 10,
+    backgroundColor: "#E2E8F0",
+    borderRadius: 999,
+    overflow: "hidden",
+    position: "relative",
+  },
+  progressFill: {
+    height: "100%",
+    borderRadius: 999,
+  },
+  progressAccent: {
+    position: "absolute",
+    right: 0,
+    top: 0,
+    bottom: 0,
+    width: 10,
+    opacity: 0.9,
+  },
+  scoreText: {
+    fontSize: 13,
     fontWeight: "700",
+    color: "#334155",
+    minWidth: 52,
+    textAlign: "right",
   },
-
-  sessionButtonRow: {
-    flexDirection: "row",
-    gap: 12,
-    alignItems: "center",
-  },
-  
-  deleteBtn: {
-    backgroundColor: "#fee2e2",
-    borderRadius: 18,
-    paddingVertical: 14,
+  whySection: {
+    backgroundColor: "#0EA5E9",
+    borderRadius: 24,
+    paddingVertical: 28,
     paddingHorizontal: 22,
-    alignItems: "center",
-    alignSelf: "flex-start",
   },
-  
-  deleteBtnText: {
-    color: "#b91c1c",
+  whyTitle: {
+    fontSize: 30,
+    fontWeight: "800",
+    color: "#FFFFFF",
+    textAlign: "center",
+    marginBottom: 22,
+  },
+  featureGrid: {
+    gap: 22,
+  },
+  featureItem: {
+    alignItems: "center",
+  },
+  featureIconWrap: {
+    width: 64,
+    height: 64,
+    borderRadius: 16,
+    backgroundColor: "rgba(255,255,255,0.2)",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 14,
+  },
+  featureTitle: {
+    fontSize: 18,
     fontWeight: "700",
-    fontSize: 16,
+    color: "#FFFFFF",
+    marginBottom: 8,
+    textAlign: "center",
+  },
+  featureText: {
+    fontSize: 15,
+    lineHeight: 22,
+    color: "#E0F2FE",
+    textAlign: "center",
   },
 });

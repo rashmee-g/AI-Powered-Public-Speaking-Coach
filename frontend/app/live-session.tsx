@@ -31,6 +31,7 @@ import {
 
 const AUDIO_CHUNK_MS = 4000;
 const FRAME_INTERVAL_MS = 2000;
+const HISTORY_STORAGE_KEY = "capstoneCoachSessionHistory_v1";
 
 function appendTranscriptSafe(previous: string, incoming: string): string {
   const prev = previous.trim();
@@ -58,8 +59,24 @@ function appendTranscriptSafe(previous: string, incoming: string): string {
     }
   }
 
-  const merged = [...prevWords, ...nextWords.slice(overlap)].join(" ").trim();
-  return merged;
+  return [...prevWords, ...nextWords.slice(overlap)].join(" ").trim();
+}
+
+function readSavedReports() {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(HISTORY_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeSavedReports(items: any[]) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(items));
+  } catch {}
 }
 
 export default function LiveSessionScreen() {
@@ -231,7 +248,6 @@ export default function LiveSessionScreen() {
       }
 
       const result = await analyzeAudioChunk(sessionId, uri);
-      console.log("audio chunk result:", result);
 
       setSpeechStatus(result?.status?.overall || "Analyzed");
 
@@ -359,151 +375,192 @@ export default function LiveSessionScreen() {
     }
   };
 
-  const HISTORY_STORAGE_KEY = "capstoneCoachSessionHistory_v1";
+  const onEndSession = async () => {
+    try {
+      setEnding(true);
+      audioLoopCancelledRef.current = true;
 
-function readSavedReports() {
-  if (typeof window === "undefined") return [];
-  try {
-    const raw = window.localStorage.getItem(HISTORY_STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
-}
+      const recording = recordingRef.current;
+      if (recording) {
+        await stopChunkAndAnalyze();
+      }
 
-function writeSavedReports(items: any[]) {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(items));
-  } catch {}
-}
+      if (!sessionId) {
+        throw new Error("No active session to end.");
+      }
 
-const onEndSession = async () => {
-  try {
-    setEnding(true);
-    audioLoopCancelledRef.current = true;
+      const res = await endSession(sessionId);
 
-    const recording = recordingRef.current;
-    if (recording) {
-      await stopChunkAndAnalyze();
-    }
+      const savedItem = {
+        sessionId,
+        createdAt: new Date().toISOString(),
+        expectedText,
+        keyPoints,
+        summary: res,
+      };
 
-    if (!sessionId) {
-      throw new Error("No active session to end.");
-    }
+      const existing = readSavedReports();
+      const next = [savedItem, ...existing.filter((x: any) => x.sessionId !== sessionId)].slice(0, 20);
+      writeSavedReports(next);
 
-    const res = await endSession(sessionId);
-
-    const savedItem = {
-      sessionId,
-      createdAt: new Date().toISOString(),
-      expectedText,
-      keyPoints,
-      summary: res,
-    };
-
-    const existing = readSavedReports();
-    const next = [savedItem, ...existing.filter((x: any) => x.sessionId !== sessionId)].slice(0, 20);
-    writeSavedReports(next);
-
-    clearCoachWebSession();
-
-    router.push({
-      pathname: "/summary",
-      params: {
-        data: JSON.stringify(res),
-      },
-    });
-  } catch (err: any) {
-    if (isSessionExpiredError(err)) {
       clearCoachWebSession();
-      Alert.alert(
-        "Session expired",
-        "Please go back and start a new session.",
-        [{ text: "OK", onPress: () => router.replace("/") }]
-      );
-      return;
-    }
 
-    Alert.alert(
-      "End Session Error",
-      err?.response?.data?.detail || err?.message || "Failed to end session"
-    );
-  } finally {
-    setEnding(false);
-  }
-};
+      router.push({
+        pathname: "/summary",
+        params: {
+          data: JSON.stringify(res),
+        },
+      });
+    } catch (err: any) {
+      if (isSessionExpiredError(err)) {
+        clearCoachWebSession();
+        Alert.alert(
+          "Session expired",
+          "Please go back and start a new session.",
+          [{ text: "OK", onPress: () => router.replace("/") }]
+        );
+        return;
+      }
+
+      Alert.alert(
+        "End Session Error",
+        err?.response?.data?.detail || err?.message || "Failed to end session"
+      );
+    } finally {
+      setEnding(false);
+    }
+  };
 
   return (
     <SafeAreaView style={styles.safe}>
       <ScrollView contentContainerStyle={styles.container}>
-  
-        {/* 🔥 Global Header (Home button + title) */}
-        <AppHeader title="Live Practice Session" />
-  
-        {/* Session Info */}
-        
-        <Text style={styles.sessionText}>
-          Session ID: {sessionId || "(none)"}
-        </Text>
-  
+        <View style={styles.navbar}>
+          <AppHeader title="" />
+        </View>
+
+        <View style={styles.hero}>
+          <View style={styles.heroTag}>
+            <Text style={styles.heroTagText}>Live Practice Session</Text>
+          </View>
+
+          <Text style={styles.heroTitle}>Stay focused. Speak clearly.</Text>
+
+          <Text style={styles.heroSubtitle}>
+            Your live coaching session is active. Keep speaking and let SpeakEZ
+            track your speech, body language, emotion, and content in real time.
+          </Text>
+
+          <View style={styles.statsRow}>
+            <View style={styles.statCard}>
+              <View style={[styles.statIconWrap, { backgroundColor: "#dbeafe" }]}>
+                <Text style={styles.statIcon}>🎤</Text>
+              </View>
+              <Text style={styles.statValue}>{speechStatus}</Text>
+              <Text style={styles.statLabel}>Speech Status</Text>
+            </View>
+
+            <View style={styles.statCard}>
+              <View style={[styles.statIconWrap, { backgroundColor: "#cffafe" }]}>
+                <Text style={styles.statIcon}>🪪</Text>
+              </View>
+              <Text style={styles.statValueSmall}>
+                {sessionId ? sessionId.slice(0, 8) : "--"}
+              </Text>
+              <Text style={styles.statLabel}>Session ID</Text>
+            </View>
+          </View>
+        </View>
+
         {!sessionId ? (
           <Text style={styles.warn}>
             No active session. Go back and start a new one.
           </Text>
         ) : null}
-  
-        {/* 🎥 Camera */}
-        <CameraPreview
-          ref={cameraRef}
-          hasPermission={cameraPermission ? cameraPermission.granted : null}
-        />
-  
-        {/* 💬 Live Tip */}
-        <FeedbackCard title="Live Coaching Tips" value={liveTip} />
-  
-        {/* 📊 Status Pills */}
-        <View style={styles.pillsRow}>
-          <StatusPill label="Speech" value={speechStatus} />
-          <StatusPill label="Body" value={bodyStatus} />
-          <StatusPill label="Emotion" value={emotionStatus} />
-          <StatusPill label="Content" value={contentStatus} />
+
+        <View style={styles.grid}>
+          <View style={styles.leftCol}>
+            <View style={styles.panel}>
+              <View style={styles.panelHeader}>
+                <View style={[styles.panelIcon, { backgroundColor: "#dbeafe" }]}>
+                  <Text style={styles.panelIconText}>🎥</Text>
+                </View>
+                <Text style={styles.panelTitle}>Live Camera Feed</Text>
+              </View>
+
+              <CameraPreview
+                ref={cameraRef}
+                hasPermission={cameraPermission ? cameraPermission.granted : null}
+              />
+            </View>
+
+            <View style={styles.panel}>
+              <View style={styles.panelHeader}>
+                <View style={[styles.panelIcon, { backgroundColor: "#e0f2fe" }]}>
+                  <Text style={styles.panelIconText}>💬</Text>
+                </View>
+                <Text style={styles.panelTitle}>Live Coaching Tip</Text>
+              </View>
+
+              <FeedbackCard title="Current Guidance" value={liveTip} />
+            </View>
+          </View>
+
+          <View style={styles.rightCol}>
+            <View style={styles.panel}>
+              <View style={styles.panelHeader}>
+                <View style={[styles.panelIcon, { backgroundColor: "#cffafe" }]}>
+                  <Text style={styles.panelIconText}>📊</Text>
+                </View>
+                <Text style={styles.panelTitle}>Live Status</Text>
+              </View>
+
+              <View style={styles.pillsWrap}>
+                <StatusPill label="Speech" value={speechStatus} />
+                <StatusPill label="Body" value={bodyStatus} />
+                <StatusPill label="Emotion" value={emotionStatus} />
+                <StatusPill label="Content" value={contentStatus} />
+              </View>
+            </View>
+
+            <View style={styles.panel}>
+              <View style={styles.panelHeader}>
+                <View style={[styles.panelIcon, { backgroundColor: "#dbeafe" }]}>
+                  <Text style={styles.panelIconText}>🧠</Text>
+                </View>
+                <Text style={styles.panelTitle}>Transcript / Content Check</Text>
+              </View>
+
+              <TextInput
+                style={[styles.input, styles.textarea]}
+                placeholder="Transcription will load here..."
+                value={transcript}
+                onChangeText={setTranscript}
+                multiline
+                placeholderTextColor="#94a3b8"
+              />
+
+              <TouchableOpacity
+                style={[styles.secondaryBtn, loadingContent && styles.buttonDisabled]}
+                onPress={onCheckContent}
+                disabled={loadingContent}
+              >
+                <Text style={styles.secondaryBtnText}>
+                  {loadingContent ? "Checking..." : "Analyze Content"}
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            <TouchableOpacity
+              style={[styles.primaryBtn, ending && styles.buttonDisabled]}
+              onPress={onEndSession}
+              disabled={ending}
+            >
+              <Text style={styles.primaryBtnText}>
+                {ending ? "Ending..." : "End Session"}
+              </Text>
+            </TouchableOpacity>
+          </View>
         </View>
-  
-        {/* 🧠 Transcript + Content */}
-        <View style={styles.card}>
-          <Text style={styles.sectionTitle}>Transcript / Content Check</Text>
-  
-          <TextInput
-            style={[styles.input, styles.multiline]}
-            placeholder="Transcription will load here..."
-            value={transcript}
-            onChangeText={setTranscript}
-            multiline
-          />
-  
-          <TouchableOpacity
-            style={styles.secondaryBtn}
-            onPress={onCheckContent}
-            disabled={loadingContent}
-          >
-            <Text style={styles.secondaryBtnText}>
-              {loadingContent ? "Checking..." : "Analyze Content"}
-            </Text>
-          </TouchableOpacity>
-        </View>
-  
-        {/* 🔚 End Session */}
-        <TouchableOpacity
-          style={[styles.primaryBtn, ending && { opacity: 0.7 }]}
-          onPress={onEndSession}
-          disabled={ending}
-        >
-          <Text style={styles.primaryBtnText}>
-            {ending ? "Ending..." : "End Session"}
-          </Text>
-        </TouchableOpacity>
-  
       </ScrollView>
     </SafeAreaView>
   );
@@ -512,88 +569,246 @@ const onEndSession = async () => {
 const styles = StyleSheet.create({
   safe: {
     flex: 1,
-    backgroundColor: "#f6f7fb",
+    backgroundColor: "#eef4ff",
   },
+
   container: {
-    padding: 20,
-    paddingBottom: 50,
+    padding: 24,
+    paddingBottom: 48,
   },
-  title: {
-    fontSize: 28,
+
+  navbar: {
+    backgroundColor: "rgba(255,255,255,0.88)",
+    borderRadius: 24,
+    paddingVertical: 10,
+    paddingHorizontal: 18,
+    marginBottom: 24,
+    borderWidth: 1,
+    borderColor: "#e5e7eb",
+    shadowColor: "#000",
+    shadowOpacity: 0.06,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 3,
+  },
+
+  hero: {
+    backgroundColor: "#ffffff",
+    borderRadius: 32,
+    padding: 34,
+    marginBottom: 28,
+    alignItems: "center",
+    shadowColor: "#000",
+    shadowOpacity: 0.08,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 4,
+  },
+
+  heroTag: {
+    backgroundColor: "#dbeafe",
+    borderRadius: 999,
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    marginBottom: 18,
+  },
+
+  heroTagText: {
+    color: "#2563eb",
+    fontWeight: "700",
+    fontSize: 13,
+  },
+
+  heroTitle: {
+    fontSize: 42,
     fontWeight: "800",
     color: "#111827",
-    marginBottom: 6,
+    textAlign: "center",
+    lineHeight: 48,
+    marginBottom: 14,
   },
-  sessionText: {
-    fontSize: 13,
-    color: "#6b7280",
-    marginBottom: 16,
+
+  heroSubtitle: {
+    fontSize: 18,
+    color: "#64748b",
+    lineHeight: 28,
+    textAlign: "center",
+    maxWidth: 760,
+    marginBottom: 26,
   },
+
+  statsRow: {
+    flexDirection: "row",
+    gap: 16,
+  },
+
+  statCard: {
+    backgroundColor: "#ffffff",
+    borderRadius: 22,
+    paddingVertical: 20,
+    paddingHorizontal: 22,
+    minWidth: 180,
+    borderWidth: 1,
+    borderColor: "#e5e7eb",
+    shadowColor: "#000",
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 2,
+    alignItems: "center",
+  },
+
+  statIconWrap: {
+    width: 48,
+    height: 48,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 12,
+  },
+
+  statIcon: {
+    fontSize: 22,
+  },
+
+  statValue: {
+    fontSize: 24,
+    fontWeight: "800",
+    color: "#111827",
+    marginBottom: 4,
+    textAlign: "center",
+  },
+
+  statValueSmall: {
+    fontSize: 18,
+    fontWeight: "800",
+    color: "#111827",
+    marginBottom: 4,
+    textAlign: "center",
+  },
+
+  statLabel: {
+    fontSize: 14,
+    color: "#64748b",
+  },
+
   warn: {
     backgroundColor: "#fef3c7",
     color: "#92400e",
     padding: 12,
     borderRadius: 12,
-    marginBottom: 12,
+    marginBottom: 16,
     fontSize: 14,
     lineHeight: 20,
   },
-  pillsRow: {
+
+  grid: {
     flexDirection: "row",
-    flexWrap: "wrap",
-    marginBottom: 12,
+    gap: 24,
+    alignItems: "flex-start",
   },
-  card: {
-    backgroundColor: "white",
-    borderRadius: 20,
-    padding: 18,
-    marginTop: 8,
-    marginBottom: 12,
+
+  leftCol: {
+    flex: 1,
+  },
+
+  rightCol: {
+    flex: 1.05,
+  },
+
+  panel: {
+    backgroundColor: "#ffffff",
+    borderRadius: 28,
+    padding: 28,
+    marginBottom: 20,
     shadowColor: "#000",
     shadowOpacity: 0.08,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 3,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 4,
   },
-  sectionTitle: {
-    fontSize: 18,
-    fontWeight: "700",
-    color: "#111827",
-    marginBottom: 10,
+
+  panelHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    marginBottom: 22,
   },
-  input: {
-    backgroundColor: "#f3f4f6",
+
+  panelIcon: {
+    width: 46,
+    height: 46,
     borderRadius: 14,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  panelIconText: {
+    fontSize: 19,
+    fontWeight: "700",
+  },
+
+  panelTitle: {
+    fontSize: 25,
+    fontWeight: "800",
+    color: "#111827",
+  },
+
+  pillsWrap: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+  },
+
+  input: {
+    backgroundColor: "#ffffff",
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#d1d5db",
+    paddingHorizontal: 16,
+    paddingVertical: 14,
     fontSize: 15,
   },
-  multiline: {
-    minHeight: 120,
+
+  textarea: {
+    minHeight: 140,
     textAlignVertical: "top",
-    marginBottom: 12,
+    marginBottom: 14,
   },
+
   primaryBtn: {
     backgroundColor: "#2563eb",
-    borderRadius: 14,
-    paddingVertical: 14,
+    borderRadius: 16,
+    paddingVertical: 16,
     alignItems: "center",
-    marginTop: 8,
+    marginTop: 6,
+    shadowColor: "#2563eb",
+    shadowOpacity: 0.25,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 3,
   },
+
   primaryBtnText: {
-    color: "white",
+    color: "#ffffff",
     fontWeight: "700",
     fontSize: 16,
   },
+
   secondaryBtn: {
     backgroundColor: "#e5e7eb",
-    borderRadius: 14,
+    borderRadius: 16,
     paddingVertical: 14,
     alignItems: "center",
   },
+
   secondaryBtnText: {
     color: "#111827",
     fontWeight: "700",
     fontSize: 15,
+  },
+
+  buttonDisabled: {
+    opacity: 0.7,
   },
 });

@@ -46,6 +46,7 @@ LIVE_POSE_STATES: dict[str, dict[str, Any]] = {}
 # -----------------------------
 class StartSessionRequest(BaseModel):
     username: str
+    title: str | None = None
     expected_text: str = ""
     key_points: list[str] = Field(default_factory=list)
 
@@ -347,30 +348,20 @@ def score_emotion(emotion_summary: dict[str, Any]) -> float:
 
 
 def letter_grade(score: float) -> str:
-    if score >= 97:
-        return "A+"
-    if score >= 93:
-        return "A"
     if score >= 90:
-        return "A-"
-    if score >= 87:
-        return "B+"
-    if score >= 83:
-        return "B"
+        return "A+"
     if score >= 80:
-        return "B-"
-    if score >= 77:
-        return "C+"
-    if score >= 73:
-        return "C"
+        return "A"
+    if score >= 75:
+        return "B+"
     if score >= 70:
-        return "C-"
-    if score >= 67:
-        return "D+"
-    if score >= 63:
-        return "D"
+        return "B"
     if score >= 60:
-        return "D-"
+        return "C+"
+    if score >= 55:
+        return "C"
+    if score >= 40:
+        return "D"
     return "F"
 
 
@@ -473,6 +464,7 @@ async def list_completed_sessions(username: str):
             "session_id": 1,
             "username": 1,
             "created_at": 1,
+            "title": 1,
             "expected_text": 1,
             "key_points": 1,
             "overall_feedback": 1,
@@ -514,6 +506,7 @@ async def start_session(payload: StartSessionRequest):
         "created_at": now,
         "updated_at": now,
         "status": "active",
+        "title": payload.title or "Untitled Session",
         "expected_text": payload.expected_text,
         "key_points": payload.key_points,
         "emotion_log": [],
@@ -701,7 +694,10 @@ async def analyze_audio_chunk(
                 "missed_points": content_result.get("missed_points", []),
                 "timestamp": time.time(),
             }
-            update_ops.setdefault("$push", {})["content_history"] = content_entry
+
+            if transcript.strip():
+                update_ops.setdefault("$push", {})["content_history"] = content_entry
+            
             await sessions_collection.update_one({"session_id": session_id}, update_ops)
 
             return {
@@ -809,7 +805,6 @@ async def analyze_content_route(payload: ContentRequest):
 
     if not transcript:
         raise HTTPException(status_code=400, detail="Transcript is required for /analyze/content.")
-
     if not expected_text:
         raise HTTPException(
             status_code=400,
@@ -917,7 +912,18 @@ async def end_session(payload: dict[str, str]):
     }
 
     content_history = session.get("content_history", [])
-    latest_content = content_history[-1] if content_history else None
+
+    latest_content = None
+    for item in reversed(content_history):
+        transcript_text = str(item.get("transcript", "")).strip()
+        topic_status = item.get("topic_status", "")
+
+        if transcript_text and topic_status not in ("no_content",):
+            latest_content = item
+            break
+
+    if latest_content is None and content_history:
+        latest_content = content_history[-1]
 
     overall_feedback: list[str] = []
     overall_feedback.extend(speech_summary.get("what_went_well", []))

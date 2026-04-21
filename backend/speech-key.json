@@ -1,0 +1,13 @@
+{
+  "type": "service_account",
+  "project_id": "ai-powered-public-speaking",
+  "private_key_id": "c29572e9cff494041ea2ab2d816abd0e8cd0f515",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCvZIvaoBdILqpY\ntXwwvvb6zaLRsjy646HILUdP7z9uDgj1SfWEmgx0BMUaQnMzucCtceeISqvWjmOT\naoDZLFeSq8Zj/wYIuQmF6wz0k/ZVOG3FDMUQFh928PquQB5avjWk260zOGCiW4jN\nLSld4fAfouT1GLCgP0VaniRcsfkdNaMCeecLksV0kK7WMpo6mcK+LiSkVRxXIgWv\n2mypQuLqeOKuhfmxrTdkPwyh69ORRIhbkC0ARIXOm5+fRNt2UE6t5sq2NMrIVmII\nwgN+wYxq5Lp5qHPYaOl9woAcBkNB6ALk6+7gEePH4M6C+tNXGGU6Y+4CfMrTx9l3\noMQdl9/DAgMBAAECggEAJrqtlSunqHVBgVAl6b+pWu1giCxy85PDTCgPaKu8Vml7\n+eoIcGzx1gadnXRR6viX/tS5myNd+YU8oLcyV4JOniEXMEqGgxOU8kDafgFUMjJB\nLvNoampwLTv+Js8axM/emZY2kypeUEulFCVmTohPFTVLmIGIswH1pxJnlh5ok1XA\noAMzLHYFtTJ/rbvYS+8VvZpxjyJnjyaqYGTU0PghGGKJNzlrtz8UivXq6D1QgdIR\nPzsLLXL6rYZZlI2i/lTGcBeGXYhnqK5O3434z7LVvS4wsCEHo1nnuCGX9VIN14X1\nVXOffXRxlra68MMyTEzJzA1u03hg22bfIMzeZLRKUQKBgQDWdKRQNaD0IMrhmf9+\nGQ9uTyut+WxgOrSJxqtQxR4I4eWUAgSbEoO1P9VJJH/VCV3QxloivlmkO/y0pE0U\niNvj64S13Vs5IlxSrD4fH9YwCIKAAl5YdHsibCwFWf8oPLvRnBSVvIV4NamOL2eW\nP+s7cbusk+77h28ynF4Ym71iMwKBgQDRXq9U1y3vGHRizKxJE4OqnZ6OhWg2xanS\n7Tj1Yjrf4TjJPiu3SiOYRYnLKiI5C/tcLrgiLupthI6I/1nkvFV4+bxRjtSTtSxM\naWw5rXFEGIMCmrWxR4JYaJuicmMtx23uTZwCIScXaJFsS4GQuESyriURsn9VZpXU\n+JusaHucMQKBgQCJcG2R3hzN+GotlXVRShxClMioka5sKZNkrQdEF2A9TxDD/1sW\nSxJPyZ4WZybp0DvovgYsOBPZFnzJBHdFzsQl2N3PdBKvlh7W+P5DEjNBy2JfSaVP\nSS9VC0BXGatWDT5NgpsKr6xWMwX8UtMvTr2h9izR2GkTmGOiauY/HSiNUwKBgFXC\n4DTzc3hV3w69YfEJEkzoBZPBp7+P1hF1ZHh3RUCBg/5C/is1LkFocpoK5zvQ4aSP\n6pLt/s7flncdidf9IVHNkksiI4dhlgSyxkcV+ah4FeoSL0yvyv+l0eKH0oJlB22u\n0rG4nMek6LSgdTEvmcxLMxn9sNTtkYBMWZAUuFVxAoGAUBx8Rui7iTKbRfwiy7S1\nZZWvIgnL+KozbqlEH9wx4G3X2mkGrimOktUD5PLrhHMgNZ8/2kbYdFz8l2ulCNOn\nAgamaVaq367BtCgkjIf7WLeLoh+ISO2j4cJriFWHzNTf1XW/CLDGKfIo57yrqhqE\nCb4KDNwT/Fjcg7sV184AIt8=\n-----END PRIVATE KEY-----\n",
+  "client_email": "public-speaking-coach-stt@ai-powered-public-speaking.iam.gserviceaccount.com",
+  "client_id": "107631309923671954154",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/public-speaking-coach-stt%40ai-powered-public-speaking.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}

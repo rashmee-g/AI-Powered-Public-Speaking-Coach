@@ -6,12 +6,14 @@ export const COACH_WEB_SESSION_KEY = "capstoneCoachSession_v1";
 
 export type CoachWebSessionPayload = {
   sessionId: string;
+  title?: string;
   expectedText: string;
   keyPoints: string[];
 };
 
 export type SessionListItem = {
   session_id: string;
+  title?: string;
   created_at: number;
   expected_text: string;
   key_points: string[];
@@ -157,6 +159,7 @@ api.interceptors.response.use(
 
 export async function startSession(payload: {
   username: string;
+  title?: string;
   expected_text?: string;
   key_points?: string[];
 }) {
