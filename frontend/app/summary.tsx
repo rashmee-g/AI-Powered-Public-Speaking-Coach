@@ -5,10 +5,14 @@ import {
   StyleSheet,
   Text,
   View,
+  Pressable,
+  Platform,
+  Alert,
 } from "react-native";
 import { useLocalSearchParams } from "expo-router";
 import FeedbackCard from "../components/FeedbackCard";
 import AppHeader from "../components/AppHeader";
+import Ionicons from "@expo/vector-icons/Ionicons";
 
 function getGradePillStyle(letter?: string) {
   if (!letter) return { bg: "#e5e7eb", text: "#475569" };
@@ -46,6 +50,56 @@ export default function SummaryScreen() {
     speechSummary?.areas_to_improve?.[0] ||
     speechSummary?.what_went_well?.[0] ||
     "No speech summary yet.";
+
+  const buildSummaryText = () => {
+    return `
+AI Public Speaking Coach - Session Summary
+
+Date: ${new Date().toLocaleString()}
+
+Overall Feedback:
+${overallFeedback.length ? overallFeedback.join("\n") : "No feedback"}
+
+Speech Metrics:
+- WPM: ${medians?.estimated_wpm ?? "N/A"}
+- Volume: ${medians?.avg_dbfs ?? "N/A"}
+- SNR: ${medians?.snr_db ?? "N/A"}
+- Pitch Range: ${medians?.pitch_range_hz ?? "N/A"}
+- Silence: ${medians?.silence_pct ?? "N/A"}%
+
+Emotion:
+${emotionSummary?.dominant_emotion ?? "N/A"}
+
+Body Language:
+${bodySummary?.top_feedback?.join("\n") ?? "N/A"}
+
+Content:
+${contentSummary?.topic_status ?? "N/A"}
+
+Next Step:
+${speechSummary?.next_step ?? "Keep practicing"}
+`.trim();
+  };
+
+  const handleDownloadSummary = () => {
+    const text = buildSummaryText();
+
+    if (Platform.OS === "web") {
+      const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `session-summary-${Date.now()}.txt`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+
+      URL.revokeObjectURL(url);
+    } else {
+      Alert.alert("Download only works on web for now");
+    }
+  };
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -95,6 +149,16 @@ export default function SummaryScreen() {
               </View>
             </View>
           ) : null}
+
+          <Pressable
+            style={({ pressed }) => [
+              styles.floatingDownload,
+              pressed && styles.floatingDownloadPressed,
+            ]}
+            onPress={handleDownloadSummary}
+          >
+            <Ionicons name="download-outline" size={24} color="#1e40af" />
+          </Pressable>
         </View>
 
         <View style={styles.grid}>
@@ -290,6 +354,7 @@ const styles = StyleSheet.create({
   },
 
   hero: {
+    position: "relative",
     backgroundColor: "#ffffff",
     borderRadius: 32,
     padding: 34,
@@ -300,6 +365,7 @@ const styles = StyleSheet.create({
     shadowRadius: 14,
     shadowOffset: { width: 0, height: 6 },
     elevation: 4,
+    paddingBottom: 88,
   },
 
   heroTag: {
@@ -382,6 +448,29 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 22,
     color: "#475569",
+  },
+
+  floatingDownload: {
+    position: "absolute",
+    right: 24,
+    bottom: 24,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: "#e0ecff",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1.5,
+    borderColor: "#2563eb",
+    shadowColor: "#000",
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 6,
+  },
+
+  floatingDownloadPressed: {
+    transform: [{ scale: 0.94 }],
   },
 
   grid: {

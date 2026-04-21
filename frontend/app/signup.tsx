@@ -1,51 +1,77 @@
 import React, { useState } from "react";
 import {
-  Alert,
   SafeAreaView,
   StyleSheet,
   Text,
   TextInput,
-  TouchableOpacity,
+  Pressable,
   View,
   Image,
 } from "react-native";
 import { router } from "expo-router";
-import { login, persistCoachUser } from "../services/api";
+import { createCoachUser, persistCoachUser } from "../services/api";
 
-export default function LoginScreen() {
+export default function SignupScreen() {
+  const [name, setName] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState("");
+  const [messageTone, setMessageTone] = useState<"error" | "success" | "">("");
 
   const normalizedUsername = username.trim().toLowerCase();
 
   const validateInputs = () => {
+    if (!name.trim()) {
+      return "Please enter your name.";
+    }
+
     if (!normalizedUsername) {
-      Alert.alert("Missing Username", "Please enter a username.");
-      return false;
+      return "Please enter a username.";
     }
 
     if (!password.trim()) {
-      Alert.alert("Missing Password", "Please enter a password.");
-      return false;
+      return "Please enter a password.";
     }
 
-    return true;
+    if (password.trim().length < 6) {
+      return "Password must be at least 6 characters.";
+    }
+
+    if (password !== confirmPassword) {
+      return "Passwords do not match.";
+    }
+
+    return "";
   };
 
-  const handleLogin = async () => {
-    if (!validateInputs()) return;
+  const handleSignup = async () => {
+    if (loading) return;
+
+    const validationMessage = validateInputs();
+    if (validationMessage) {
+      setMessage(validationMessage);
+      setMessageTone("error");
+      return;
+    }
 
     try {
       setLoading(true);
-      const res = await login(normalizedUsername, password);
+      setMessage("Creating account...");
+      setMessageTone("success");
+
+      const res = await createCoachUser({
+        name: name.trim(),
+        username: normalizedUsername,
+        password,
+      });
+
       persistCoachUser({ username: res.username });
       router.replace("/");
     } catch (err: any) {
-      Alert.alert(
-        "Login Error",
-        err?.response?.data?.detail || err?.message || "Login failed"
-      );
+      setMessage(err?.response?.data?.detail || err?.message || "Signup failed");
+      setMessageTone("error");
     } finally {
       setLoading(false);
     }
@@ -71,27 +97,59 @@ export default function LoginScreen() {
             />
 
             <Text style={styles.heroTitle}>
-              Speak Better.{"\n"}Perform Stronger.
+              Create Your{"\n"}SpeakEZ Account.
             </Text>
 
             <Text style={styles.heroSubtitle}>
-              Practice smarter. Speak with confidence.
+              Start saving sessions, tracking progress, and improving with every practice.
             </Text>
           </View>
         </View>
 
         <View style={styles.right}>
           <View style={styles.formCard}>
-            <Text style={styles.formTitle}>Welcome Back</Text>
+            <Text style={styles.formTitle}>Create Account</Text>
             <Text style={styles.formSubtitle}>
-              Log in to continue reviewing and saving your sessions.
+              Sign up to start practicing and reviewing your speaking sessions.
             </Text>
+
+            {!!message && (
+              <View
+                style={[
+                  styles.messageBox,
+                  messageTone === "error" ? styles.messageError : styles.messageSuccess,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.messageText,
+                    messageTone === "error" ? styles.messageErrorText : styles.messageSuccessText,
+                  ]}
+                >
+                  {message}
+                </Text>
+              </View>
+            )}
+
+            <TextInput
+              style={styles.input}
+              placeholder="Full Name"
+              value={name}
+              onChangeText={(value) => {
+                setName(value);
+                if (message) setMessage("");
+              }}
+              editable={!loading}
+            />
 
             <TextInput
               style={styles.input}
               placeholder="Username"
               value={username}
-              onChangeText={setUsername}
+              onChangeText={(value) => {
+                setUsername(value);
+                if (message) setMessage("");
+              }}
               autoCapitalize="none"
               autoCorrect={false}
               editable={!loading}
@@ -101,30 +159,54 @@ export default function LoginScreen() {
               style={styles.input}
               placeholder="Password"
               value={password}
-              onChangeText={setPassword}
+              onChangeText={(value) => {
+                setPassword(value);
+                if (message) setMessage("");
+              }}
               secureTextEntry
               autoCapitalize="none"
               autoCorrect={false}
               editable={!loading}
             />
 
-            <TouchableOpacity
-              style={[styles.primaryBtn, loading && styles.buttonDisabled]}
-              onPress={handleLogin}
+            <TextInput
+              style={styles.input}
+              placeholder="Confirm Password"
+              value={confirmPassword}
+              onChangeText={(value) => {
+                setConfirmPassword(value);
+                if (message) setMessage("");
+              }}
+              secureTextEntry
+              autoCapitalize="none"
+              autoCorrect={false}
+              editable={!loading}
+              onSubmitEditing={handleSignup}
+            />
+
+            <Pressable
+              style={({ pressed }) => [
+                styles.primaryBtn,
+                (loading || pressed) && styles.buttonDisabled,
+              ]}
+              onPress={handleSignup}
               disabled={loading}
             >
               <Text style={styles.primaryText}>
-                {loading ? "Loading..." : "Login"}
+                {loading ? "Creating Account..." : "Sign Up"}
               </Text>
-            </TouchableOpacity>
+            </Pressable>
 
-            <TouchableOpacity
-              style={[styles.secondaryBtn, loading && styles.buttonDisabled]}
-              onPress={() => router.push("/signup")}
+            <Pressable
+              style={({ pressed }) => [
+                styles.secondaryBtn,
+                (loading || pressed) && styles.buttonDisabled,
+              ]}
+              onPress={() => router.push("/login")}
               disabled={loading}
             >
-              <Text style={styles.secondaryText}>Create Account</Text>
-            </TouchableOpacity>
+              <Text style={styles.secondaryText}>Back to Login</Text>
+            </Pressable>
           </View>
         </View>
       </View>
@@ -137,7 +219,6 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "#f8fafc",
   },
-
   navbar: {
     height: 70,
     backgroundColor: "#ffffff",
@@ -151,18 +232,15 @@ const styles = StyleSheet.create({
     right: 0,
     zIndex: 10,
   },
-
   navLogo: {
     width: 120,
     height: 40,
   },
-
   body: {
     flex: 1,
     flexDirection: "row",
     marginTop: 70,
   },
-
   left: {
     flex: 1,
     padding: 80,
@@ -170,18 +248,15 @@ const styles = StyleSheet.create({
     alignItems: "center",
     backgroundColor: "#ffffff",
   },
-
   heroContent: {
     maxWidth: 500,
   },
-
   heroLogo: {
     width: 260,
     height: 120,
     alignSelf: "flex-start",
     marginBottom: 20,
   },
-
   heroTitle: {
     fontSize: 52,
     fontWeight: "800",
@@ -189,19 +264,16 @@ const styles = StyleSheet.create({
     lineHeight: 58,
     marginBottom: 16,
   },
-
   heroSubtitle: {
     fontSize: 18,
     color: "#6b7280",
   },
-
   right: {
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
     backgroundColor: "#f1f5f9",
   },
-
   formCard: {
     width: "70%",
     backgroundColor: "#ffffff",
@@ -212,21 +284,42 @@ const styles = StyleSheet.create({
     shadowRadius: 10,
     elevation: 5,
   },
-
   formTitle: {
     fontSize: 24,
     fontWeight: "700",
     marginBottom: 10,
     color: "#111827",
   },
-
   formSubtitle: {
     fontSize: 14,
     color: "#6b7280",
     marginBottom: 20,
     lineHeight: 20,
   },
-
+  messageBox: {
+    borderRadius: 12,
+    borderWidth: 1,
+    marginBottom: 15,
+    padding: 12,
+  },
+  messageText: {
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  messageError: {
+    backgroundColor: "#fef2f2",
+    borderColor: "#fecaca",
+  },
+  messageErrorText: {
+    color: "#b91c1c",
+  },
+  messageSuccess: {
+    backgroundColor: "#ecfdf5",
+    borderColor: "#a7f3d0",
+  },
+  messageSuccessText: {
+    color: "#047857",
+  },
   input: {
     backgroundColor: "#f3f4f6",
     padding: 14,
@@ -234,7 +327,6 @@ const styles = StyleSheet.create({
     marginBottom: 15,
     fontSize: 15,
   },
-
   primaryBtn: {
     backgroundColor: "#2563eb",
     padding: 16,
@@ -242,13 +334,11 @@ const styles = StyleSheet.create({
     alignItems: "center",
     marginTop: 10,
   },
-
   primaryText: {
     color: "#fff",
     fontWeight: "700",
     fontSize: 16,
   },
-
   secondaryBtn: {
     marginTop: 12,
     padding: 14,
@@ -256,12 +346,10 @@ const styles = StyleSheet.create({
     backgroundColor: "#e5e7eb",
     alignItems: "center",
   },
-
   secondaryText: {
     color: "#111827",
     fontWeight: "600",
   },
-
   buttonDisabled: {
     opacity: 0.7,
   },

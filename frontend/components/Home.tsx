@@ -26,6 +26,7 @@ export default function StartSessionCard() {
       setLoading(true);
 
       const res = await startSession({
+        title: title,
         expected_text: expectedText,
         key_points: keyPoints,
       });

@@ -258,7 +258,11 @@ export type CoachUserPayload = {
   username: string;
 };
 
+let inMemoryCoachUser: CoachUserPayload | null = null;
+
 export function persistCoachUser(payload: CoachUserPayload) {
+  inMemoryCoachUser = payload;
+
   if (Platform.OS !== "web" || typeof window === "undefined") {
     return;
   }
@@ -269,32 +273,26 @@ export function persistCoachUser(payload: CoachUserPayload) {
 
 export function readCoachUser(): CoachUserPayload | null {
   if (Platform.OS !== "web" || typeof window === "undefined") {
-    return null;
+    return inMemoryCoachUser;
   }
   try {
     const raw = window.localStorage.getItem(COACH_USER_KEY);
     if (!raw) return null;
     return JSON.parse(raw) as CoachUserPayload;
   } catch {
-    return null;
+    return inMemoryCoachUser;
   }
 }
 
 export function clearCoachUser() {
+  inMemoryCoachUser = null;
+
   if (Platform.OS !== "web" || typeof window === "undefined") {
     return;
   }
   try {
     window.localStorage.removeItem(COACH_USER_KEY);
   } catch {}
-}
-
-export async function signup(username: string, password: string) {
-  const res = await api.post("/auth/signup", {
-    username,
-    password,
-  });
-  return res.data;
 }
 
 export async function login(username: string, password: string) {
@@ -309,5 +307,14 @@ export async function deleteSession(sessionId: string, username: string) {
   const res = await api.delete(`/sessions/${sessionId}`, {
     params: { username },
   });
+  return res.data;
+}
+
+export async function createCoachUser(payload: {
+  name: string;
+  username: string;
+  password: string;
+}) {
+  const res = await api.post("/auth/signup", payload);
   return res.data;
 }
