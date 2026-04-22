@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+python-multipart
+numpy
+opencv-python
+mediapipe
+deepface
+librosa
+soundfile
+sentence-transformers
+scikit-learn
+google-cloud-speech
+pydantic
+protobuf<5
